@@ -93,7 +93,7 @@ jobs:
             if [ ! -d "${{ env.VCPKG_ROOT }}" ]; then
               git clone https://github.com/microsoft/vcpkg.git ${{ env.VCPKG_ROOT }}
             fi
-            ${{ env.VCPKG_ROOT }}/bootstrap-vcpkg.sh -disable-metrics
+            ${{ env.VCPKG_ROOT }}/bootstrap-vcpkg.sh
           fi
 
       - name: Configure vcpkg triplet
