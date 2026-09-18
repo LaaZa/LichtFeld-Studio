@@ -1,11 +1,6 @@
 name: Ubuntu CUDA 13 Build
 
 on:
-  push:
-    branches: [ dev, master, main ]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
   workflow_dispatch:
 
 jobs:
