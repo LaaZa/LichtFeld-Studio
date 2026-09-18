@@ -118,6 +118,7 @@ jobs:
         run: |
           cmake -B build -S . -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr \
             -DCMAKE_CUDA_ARCHITECTURES="86;89;90" \
             -DCUDAToolkit_ROOT=/usr/local/cuda \
             -DCUDAToolkit_LIBRARY_ROOT=/usr/local/cuda \
