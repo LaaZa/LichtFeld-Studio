@@ -4,7 +4,6 @@ on:
   schedule:
     # Runs daily at 02:00 UTC
     - cron: '0 2 * * *'
-  # Allows triggering manually anytime from the GitHub Actions UI
   workflow_dispatch:
 
 jobs:
@@ -13,15 +12,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
       - name: Sync with Upstream
         uses: repo-sync/github-sync@v2
         with:
-          target_repo_token: ${{ secrets.GITHUB_TOKEN }}
-          upstream_repository: "MrNeRF/LichtFeld-Studio"
-          target_branch: "master"
-          upstream_branch: "master"
+          source_repo: "MrNeRF/LichtFeld-Studio"
+          source_branch: "master"
+          destination_branch: "master"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
