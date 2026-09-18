@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import json
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -13,9 +14,10 @@ class Account:
     base_url = "https://portal.example"
     email = "one@example.com"
     owner = "one"
+    busy = False
 
     def snapshot(self):
-        return SimpleNamespace(signed_in=True, email=self.email, connected_since="session")
+        return SimpleNamespace(signed_in=True, email=self.email, connected_since="session", linking=False)
 
 class Client:
     def __init__(self, account, **kwargs):
@@ -44,6 +46,125 @@ def connected(tmp_path, monkeypatch):
     # longer creates or rewrites this file.
     service._save()
     return service
+
+
+def test_relink_latches_automatic_refresh_but_manual_retry_is_allowed(tmp_path, monkeypatch):
+    calls = []
+    stages = []
+
+    class RelinkClient(Client):
+        def _request(self, *args):
+            calls.append(args)
+            raise gallery_sync.PortalHTTPError(403, "gallery_relink_required")
+
+    monkeypatch.setattr(gallery_sync, "PortalGalleryClient", RelinkClient)
+    monkeypatch.setattr(gallery_sync, "log_stage", lambda name, **values: stages.append((name, values)))
+    monkeypatch.setattr(gallery_sync, "log_failure", lambda *_args, **_kwargs: pytest.fail(
+        "An expected relink response must not emit an error traceback"
+    ))
+    service = gallery_sync.GallerySync(Account(), tmp_path)
+
+    service.refresh()
+    finish(service)
+    assert service.snapshot()["relink_required"] is True
+    assert len(calls) == 1
+    assert stages == [("relink_required", {"operation": "refresh"})]
+
+    service.refresh()
+    assert len(calls) == 1
+
+    service.refresh(force=True)
+    finish(service)
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("in_worker", [False, True])
+@pytest.mark.parametrize("missing", ["email", "connected_since"])
+def test_refresh_reports_settled_incomplete_account_without_worker_failure(tmp_path, monkeypatch, in_worker, missing):
+    failures = []
+    snap = SimpleNamespace(signed_in=True, email="one@example.com", connected_since="session", linking=False, error="")
+    account = Account()
+    account.snapshot = lambda: snap
+    service = gallery_sync.GallerySync(account, tmp_path)
+    service.message = ""
+    service._refresh_ok = True
+    version = service.version
+    monkeypatch.setattr(gallery_sync, "log_failure", lambda *args, **kwargs: failures.append((args, kwargs)))
+    if in_worker:
+        launch = service._launch
+        def changed(action, **kwargs):
+            setattr(snap, missing, "")
+            launch(action, **kwargs)
+        monkeypatch.setattr(service, "_launch", changed)
+    else:
+        setattr(snap, missing, "")
+
+    service.refresh(force=True)
+    if in_worker:
+        finish(service)
+    else:
+        assert service._thread is None
+
+    state = service.snapshot()
+    assert state["message"] == "projects.gallery.error.account_loading"
+    assert state["actionFailure"]["message"] == state["message"]
+    assert state["actionFailure"]["identity"] == service.identity()
+    assert state["refresh_ok"] is False
+    assert state["version"] > version
+    assert failures == []
+
+
+@pytest.mark.parametrize("locale", ["en", "de", "es", "fr", "it", "ja", "ko", "nl", "pl", "zh"])
+def test_incomplete_account_sentinel_resolves_through_translation(monkeypatch, locale):
+    import lichtfeld as lf
+    from lfs_plugins.gallery_messages import localize_message
+
+    path = Path(__file__).resolve().parents[2] / "src/visualizer/gui/resources/locales" / f"{locale}.json"
+    translations = json.loads(path.read_text())
+    calls = []
+    def translate(key):
+        calls.append(key)
+        return translations[key]
+    monkeypatch.setattr(lf.ui, "tr", translate)
+    message = "projects.gallery.error.account_loading"
+    assert localize_message(message) == translations[message]
+    assert translations[message] != translations["projects.gallery.error.access"]
+    assert calls == [message]
+
+
+@pytest.mark.parametrize("in_worker", [False, True])
+@pytest.mark.parametrize("pending", ["linking", "busy"])
+def test_refresh_waits_silently_for_complete_account_details(tmp_path, monkeypatch, in_worker, pending):
+    failures = []
+
+    class LoadingAccount(Account):
+        email = ""
+
+        def snapshot(self):
+            return SimpleNamespace(signed_in=True, email=self.email, connected_since="", linking=pending == "linking")
+
+    monkeypatch.setattr(gallery_sync, "log_failure", lambda *args, **kwargs: failures.append((args, kwargs)))
+    service = gallery_sync.GallerySync(LoadingAccount(), tmp_path)
+    service.message = ""
+    service.account.busy = pending == "busy"
+    if in_worker:
+        snapshot = service.account.snapshot
+        service.account.snapshot = Account().snapshot
+        launch = service._launch
+        def changed(action, **kwargs):
+            service.account.snapshot = snapshot
+            launch(action, **kwargs)
+        monkeypatch.setattr(service, "_launch", changed)
+
+    service.refresh(force=True)
+
+    if in_worker:
+        finish(service)
+    else:
+        assert service._thread is None
+    assert service.snapshot()["message"] == ""
+    assert service.snapshot()["actionFailure"] is None
+    assert failures == []
 
 def test_identity_reads_current_account_without_traversing_private_history(tmp_path, monkeypatch):
     service = connected(tmp_path, monkeypatch)
@@ -469,7 +590,7 @@ def test_empty_profile_never_binds_a_gallery_account(tmp_path, monkeypatch):
     account.email = ""
     service = gallery_sync.GallerySync(account, tmp_path)
     service.refresh()
-    finish(service)
+    assert service._thread is None
     assert service._owner is None
     assert not service.snapshot()["connected"]
     assert not (tmp_path / "sync.json").exists()
@@ -1405,7 +1526,11 @@ def test_settings_undo_survives_its_follow_up_upload(tmp_path, monkeypatch):
                                    _commitUuid="after"), "project")
     finish(service)
     update = service._job(job_id)["localUpdate"]
-    assert gallery_sync.same_undo_link(service.snapshot()["links"]["project"], update["appliedLink"])
+    # A saved undo record may predate the removal of visibility from shared fields.
+    update["appliedLink"]["localFields"] = dict(fields, visibility="private")
+    current = service.snapshot()["links"]["project"]
+    assert gallery_sync.same_undo_link(current, update["appliedLink"])
+    assert not gallery_sync.same_undo_link(dict(current, sharedFields=dict(fields, title="Changed")), update["appliedLink"])
     assert update["previousLink"] == before
     service.restore_local_backup(str(path), update["backupPath"], gallery_sync.file_stamp(path))
     finish(service)
@@ -1490,3 +1615,12 @@ def test_handoff_sigkill_keeps_one_durable_link(tmp_path, monkeypatch, kill_poin
     assert set(restarted.snapshot()['links']) == {'new'}
     assert restarted.snapshot()['jobs'][0]['handoff']['state'] == 'completed'
     assert not restarted.snapshot().get('handoffIntents')
+
+
+def test_server_private_visibility_is_preserved_but_not_shared():
+    remote = dict(id="scene", title="Scene", description="", visibility="private",
+        viewerSettings={}, contentRevision="c", metadataRevision="m")
+    link = gallery_sync.exchange_link(remote, "saved")
+    journal = dict(version=3, accounts={"owner": dict(links={"project": link}, jobs=[])})
+    gallery_sync._validate_journal(journal)
+    assert (link["sharedFields"], link["metadata"]) == (dict(title="Scene", description="", viewerSettings={}), remote)

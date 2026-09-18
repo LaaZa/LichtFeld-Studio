@@ -35,7 +35,7 @@ MAX_JOURNAL_BYTES = 32 * 1024 * 1024
 def shared_fields(scene):
     """Fields shared with LichtFeld Studio; cover, highlights and broad revision excluded."""
     return copy.deepcopy({key: scene.get(key, {} if key == "viewerSettings" else "")
-                          for key in ("title", "description", "visibility", "viewerSettings")})
+                          for key in ("title", "description", "viewerSettings")})
 
 
 def exchange_link(scene, commit_uuid=""):
@@ -450,9 +450,16 @@ class GallerySync:
                         self._check_journal_ready()
                         action()
                 except Exception as exc:
-                    log_failure("worker", exc, operation=operation or "transfer")
+                    relink_required = (
+                        isinstance(exc, PortalHTTPError)
+                        and exc.error == "gallery_relink_required"
+                    )
+                    if relink_required:
+                        log_stage("relink_required", operation=operation or "transfer")
+                    else:
+                        log_failure("worker", exc, operation=operation or "transfer")
                     with self._lock:
-                        self._relink_identity = identity if isinstance(exc, PortalHTTPError) and exc.error == "gallery_relink_required" else None
+                        self._relink_identity = identity if relink_required else None
                         self.message = friendly_error(exc)
                         self._action_failure = dict(id=str(uuid.uuid4()), identity=identity, message=self.message)
                 finally:
@@ -479,10 +486,26 @@ class GallerySync:
             action()
         self._launch(checked, operation="metadata")
 
-    def refresh(self):
+    def _report_incomplete_account(self, snap):
+        if snap.linking or self.account.busy:
+            return
+        with self._lock:
+            self.message = "projects.gallery.error.account_loading"
+            self._action_failure = dict(id=str(uuid.uuid4()), identity=self.identity(), message=self.message)
+            self._refresh_ok = False
+            # Publish direct returns too; workers also advance version on completion.
+            self.version += 1
+
+    def refresh(self, *, force=False):
         if self.busy and self._operation == "refresh":
             return
+        if not force and self._relink_identity == self.identity():
+            return
         if self._unsupported_identity == self.identity():
+            return
+        snap = self.account.snapshot()
+        if snap.signed_in and (not snap.email or not snap.connected_since):
+            self._report_incomplete_account(snap)
             return
         self._unsupported_identity = None
         self._refresh_ok = False
@@ -491,7 +514,8 @@ class GallerySync:
             if not snap.signed_in:
                 raise ValueError("Sign in with your LichtFeld account first.")
             if not snap.email or not snap.connected_since:
-                raise ValueError("Your account details are still loading. Refresh your account, then retry.")
+                self._report_incomplete_account(snap)
+                return
             session = (snap.email, snap.connected_since)
             origin = self.account.base_url
             client = PortalGalleryClient(self.account, expected_session=session)
@@ -1961,6 +1985,9 @@ def get_gallery_sync():
 
 
 def same_undo_link(current, applied):
+    def fields(link):
+        saved = link.get("localFields") or link.get("sharedFields")
+        # Links written by older builds still include visibility in their saved fields.
+        return {k: v for k, v in saved.items() if k != "visibility"} if saved is not None else None
     return (all(current.get(key) == applied.get(key) for key in ("sceneId", "commitUuid"))
-            and (current.get("localFields") or current.get("sharedFields")) ==
-                (applied.get("localFields") or applied.get("sharedFields")))
+            and fields(current) == fields(applied))
