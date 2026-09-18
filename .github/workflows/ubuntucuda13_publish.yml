@@ -90,7 +90,10 @@ jobs:
         run: |
           if [ ! -f "${{ env.VCPKG_ROOT }}/vcpkg" ]; then
             echo "vcpkg binary missing, bootstrapping..."
-            git clone https://github.com/microsoft/vcpkg.git ${{ env.VCPKG_ROOT }} \vert{}\vert{} true${{ env.VCPKG_ROOT }}/bootstrap-vcpkg.sh -disableMetrics
+            if [ ! -d "${{ env.VCPKG_ROOT }}" ]; then
+              git clone https://github.com/microsoft/vcpkg.git ${{ env.VCPKG_ROOT }}
+            fi
+            ${{ env.VCPKG_ROOT }}/bootstrap-vcpkg.sh -disable-metrics
           fi
 
       - name: Configure vcpkg triplet
