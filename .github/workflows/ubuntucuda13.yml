@@ -86,10 +86,12 @@ jobs:
           restore-keys: vcpkg-tool-${{ runner.os }}-
 
       - name: Setup vcpkg
-        if: steps.cache-vcpkg-tool.outputs.cache-hit != 'true' || !exists(env.VCPKG_ROOT)
         run: |
-          git clone https://github.com/microsoft/vcpkg.git ${{ env.VCPKG_ROOT }}
-          ${{ env.VCPKG_ROOT }}/bootstrap-vcpkg.sh -disableMetrics
+          if [ ! -f "${{ env.VCPKG_ROOT }}/vcpkg" ]; then
+            echo "vcpkg binary missing, bootstrapping..."
+            git clone https://github.com/microsoft/vcpkg.git ${{ env.VCPKG_ROOT }} || true
+            ${{ env.VCPKG_ROOT }}/bootstrap-vcpkg.sh -disableMetrics
+          fi
 
       - name: Configure vcpkg triplet
         run: |
