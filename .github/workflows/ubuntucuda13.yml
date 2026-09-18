@@ -12,7 +12,7 @@ jobs:
   build-ubuntu:
     runs-on: ubuntu-26.04
     container:
-      image: nvidia/cuda:13.4.0-devel-ubuntu26.04
+      image: nvidia/cuda:13.3.1-devel-ubuntu26.04
     strategy:
       fail-fast: false
       matrix:
