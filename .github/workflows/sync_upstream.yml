@@ -2,7 +2,6 @@ name: Sync Upstream
 
 on:
   schedule:
-    # Runs daily at 02:00 UTC
     - cron: '0 2 * * *'
   workflow_dispatch:
 
@@ -11,7 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Sync with Upstream
         uses: repo-sync/github-sync@v2
         with:
