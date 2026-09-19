@@ -143,6 +143,13 @@ jobs:
         run: |
           export APPIMAGE_EXTRACT_AND_RUN=1
 
+          # Find every directory in the workspace that contains a .so file
+          # and add them all to the LD_LIBRARY_PATH separated by colons.
+          export LD_LIBRARY_PATH=$(find . -name "*.so*" -printf '%h\n' | sort -u | tr '\n' ':')$LD_LIBRARY_PATH
+          
+          echo "Using LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+          
+
           # Download linuxdeploy
           wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           chmod +x linuxdeploy-x86_64.AppImage
