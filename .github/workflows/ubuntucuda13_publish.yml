@@ -139,6 +139,7 @@ jobs:
           tar -czvf ../LichtFeld-Studio-Ubuntu26.04-CUDA13.tar.gz usr/
           cd ..
       - name: Build AppImage
+        shell: bash
         run: |
           export APPIMAGE_EXTRACT_AND_RUN=1
 
