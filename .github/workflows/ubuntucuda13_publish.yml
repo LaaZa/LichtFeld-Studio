@@ -147,7 +147,7 @@ jobs:
         run: |
           # Package the raw bin/libs before linuxdeploy pulls in system dependencies
           cd dist
-          tar -czvf ../LichtFeld-Studio-Ubuntu26.04-CUDA13.4.tar.gz usr/
+          tar -czvf ../LichtFeld-Studio-Ubuntu26.04-CUDA13.tar.gz usr/
           cd ..
 
       - name: Build AppImage
@@ -212,7 +212,7 @@ jobs:
             --output appimage
           
           # Rename output
-          mv *.AppImage LichtFeld-Studio-Ubuntu26.04-CUDA13.4.AppImage
+          mv *.AppImage LichtFeld-Studio-CUDA13.AppImage
 
       - name: Upload Build Artifact (Actions Tab)
         uses: actions/upload-artifact@v4
