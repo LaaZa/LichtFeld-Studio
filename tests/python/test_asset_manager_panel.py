@@ -9,6 +9,7 @@ from urllib.parse import quote
 import json
 import inspect
 import re
+import shutil
 import sys
 import threading
 import time
@@ -188,6 +189,10 @@ class _Element:
         self.scroll_height = 900.0
         self.client_height = 300.0
         self.client_width = 800.0
+        self.absolute_left = 0.0
+        self.absolute_top = 0.0
+        self.absolute_width = self.client_width
+        self.absolute_height = 24.0
         self.focused = False
         self.selection_range = None
         if parent is not None:
@@ -585,6 +590,29 @@ def test_gallery_more_button_uses_same_shared_menu(panel_module):
     assert len(panel_module.lf._test_state.context_menus) == 1
     assert event.stopped is True
 
+
+def test_list_view_exposes_the_same_more_menu_affordance(panel_module):
+    import xml.etree.ElementTree as ET
+
+    resources = Path(__file__).resolve().parents[2] / "src/visualizer/gui/rmlui/resources"
+    root = ET.fromstring((resources / "asset_manager.rml").read_text())
+    row = root.find('.//div[@class="asset-list-row"]')
+    assert row is not None
+    button = row.find('.//button[@data-asset-action="menu"]')
+    assert button is not None
+    assert button.get("data-attr-data-asset-id") == "asset.id"
+    children = list(row)
+    assert children.index(button) == next(
+        index for index, child in enumerate(children)
+        if "asset-col-folder" in child.get("class", "")
+    ) + 1
+
+    rcss = (resources / "asset_manager.rcss").read_text()
+    assert ".asset-list-menu-spacer { flex: 0 0 32dp; width: 32dp; min-width: 32dp;" in rcss
+    assert ".asset-list-menu { flex: 0 0 24dp; width: 24dp; min-width: 24dp;" in rcss
+    assert ".asset-list-row:hover .asset-list-menu" in rcss
+    assert ".asset-list-row.is-selected .asset-list-menu" in rcss
+
 def test_real_folder_menu_reveals_or_removes_mapping(panel_module, monkeypatch):
     panel = panel_module.AssetManagerPanel()
     panel._asset_index = _index(
@@ -871,6 +899,203 @@ def test_recent_only_project_has_no_gallery_inspector_action(
     assert controller_calls == []
 
 
+def test_recent_only_project_uses_native_inspection_without_joining_library(
+    panel_module, monkeypatch, tmp_path
+):
+    project_path = tmp_path / "external.licht"
+    project_path.write_bytes(b"project")
+    monkeypatch.setattr(
+        panel_module.lf, "project_recent_files", lambda: [str(project_path)], raising=False
+    )
+    panel = panel_module.AssetManagerPanel()
+    panel._asset_index = _index()
+    panel._selected_folder_id = panel_module.SCOPE_RECENT
+    recent = panel._filtered_assets()[0]
+    panel._inspection_by_asset[recent["id"]] = {
+        "card": SimpleNamespace(
+            has_preview=True,
+            physical_file_size=2048,
+            saved_at_unix_ns=1_700_000_000_000_000_000,
+            commit_uuid="inspected-commit",
+        ),
+        "details": object(),
+    }
+
+    formatted = panel._format_asset_for_ui(recent)
+    assert formatted["size_label"].startswith("2.0 ")
+    assert formatted["saved_label"]
+    assert formatted["has_preview"] is True
+    assert formatted["commit_uuid"] == "inspected-commit"
+    assert panel._asset_index.assets == {}
+    assert [item["action"] for item in panel._asset_context_menu_items(recent)] == [
+        "load",
+        "show_in_folder",
+        "project:contents",
+        "project:export_as",
+        "project:update_thumbnail",
+        "project:rename",
+    ]
+
+
+def test_recent_only_project_cache_identity_tracks_external_file_changes(
+    panel_module, monkeypatch, tmp_path
+):
+    project_path = tmp_path / "external.licht"
+    project_path.write_bytes(b"version-a")
+    monkeypatch.setattr(
+        panel_module.lf, "project_recent_files", lambda: [str(project_path)], raising=False
+    )
+    panel = panel_module.AssetManagerPanel()
+    panel._asset_index = _index()
+
+    first = panel._recent_scope_assets()[0]
+    project_path.write_bytes(b"version-b-is-larger")
+    second = panel._recent_scope_assets()[0]
+
+    assert first is not second
+    assert first["stat_identity"] != second["stat_identity"]
+    assert second["file_size_bytes"] == len(b"version-b-is-larger")
+
+
+def test_recent_only_inspection_drives_preview_and_exposes_failure(
+    panel_module, monkeypatch, tmp_path
+):
+    project_path = tmp_path / "external.licht"
+    project_path.write_bytes(b"project")
+    monkeypatch.setattr(
+        panel_module.lf, "project_recent_files", lambda: [str(project_path)], raising=False
+    )
+    panel = panel_module.AssetManagerPanel()
+    panel._asset_index = _index()
+    panel._selected_folder_id = panel_module.SCOPE_RECENT
+    recent = panel._recent_scope_assets()[0]
+    panel._selected_asset_ids = {recent["id"]}
+    panel._inspection_by_asset[recent["id"]] = {
+        "card": SimpleNamespace(
+            project_uuid="native-project",
+            commit_uuid="native-commit",
+            has_preview=True,
+            physical_file_size=7,
+            saved_at_unix_ns=1,
+        )
+    }
+
+    decorator = panel.get_selected_asset_thumbnail_decorator()
+    assert "kind=licht" in decorator and "native-commit" in decorator
+
+    panel._panel_mounted = True
+    panel._on_inspection_result(
+        recent["id"], "card", None, ValueError("corrupt project")
+    )
+    assert panel.get_selected_health_state() == "UNREADABLE"
+    assert panel.selected_has_problem() is True
+    assert panel.get_catalog_notice() == "corrupt project"
+
+
+@pytest.mark.parametrize("backup", [False, True])
+def test_recent_only_operation_uses_inspected_native_identity(
+    panel_module, monkeypatch, tmp_path, backup
+):
+    from lfs_plugins import project_operations
+
+    project_path = tmp_path / "external.licht"
+    project_path.write_bytes(b"project")
+    recent_id = "recent:temporary-row"
+    native_id = str(uuid.uuid4())
+    card = SimpleNamespace(project_uuid=native_id, commit_uuid=str(uuid.uuid4()))
+    details = SimpleNamespace(card=card)
+    backup_path = tmp_path / "backup.licht"
+    backup_path.write_bytes(b"backup")
+    calls = []
+    io = SimpleNamespace(
+        inspect_project_card=lambda _path: card,
+        inspect_project_details=lambda _path: details,
+        plan_reduce_size=lambda _path: object(),
+        backup_project_file=lambda _path: backup_path,
+        run_project_operation=lambda _path, project_id, commit_id, action: (
+            calls.append((project_id, commit_id)), action()
+        )[1],
+    )
+    real_store = project_operations.ProjectOperations(io, tmp_path / "records")
+    monkeypatch.setattr(project_operations, "ProjectOperations", lambda _io: real_store)
+    monkeypatch.setattr(panel_module.lf, "io", io, raising=False)
+
+    class InlineThread:
+        def __init__(self, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(panel_module.threading, "Thread", InlineThread)
+    panel = panel_module.AssetManagerPanel()
+    recent = {
+        "id": recent_id,
+        "path": str(project_path),
+        "name": "external",
+        "recent_only": True,
+    }
+    monkeypatch.setattr(panel, "_asset_dict", lambda asset_id: recent if asset_id == recent_id else None)
+    panel._inspection_by_asset[recent_id] = {"card": card, "details": details}
+
+    panel._start_project_operation(
+        recent_id,
+        "Export project",
+        lambda _progress, _cancel: calls.append("executed"),
+        backup=backup,
+    )
+
+    assert calls[-1] == "executed"
+    if backup:
+        assert calls[0] == (native_id, str(card.commit_uuid))
+    assert next(iter(panel._project_operations.values()))["status"] == "completed"
+    assert panel._asset_index is None
+
+
+def test_recent_only_operation_executes_against_native_project_fixture(
+    lf, panel_module, monkeypatch, tmp_path
+):
+    from lfs_plugins import project_operations
+
+    project_path = tmp_path / "external.licht"
+    shutil.copy2(Path(__file__).parents[1] / "data" / "portable-sog.licht", project_path)
+    card = lf.io.inspect_project_card(project_path)
+    details = lf.io.inspect_project_details(project_path)
+    recent_id = "recent:native-fixture"
+    store = project_operations.ProjectOperations(lf.io, tmp_path / "records")
+    monkeypatch.setattr(project_operations, "ProjectOperations", lambda _io: store)
+    monkeypatch.setattr(panel_module.lf, "io", lf.io, raising=False)
+
+    class InlineThread:
+        def __init__(self, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(panel_module.threading, "Thread", InlineThread)
+    panel = panel_module.AssetManagerPanel()
+    recent = {
+        "id": recent_id,
+        "path": str(project_path),
+        "name": "external",
+        "recent_only": True,
+    }
+    monkeypatch.setattr(panel, "_asset_dict", lambda asset_id: recent if asset_id == recent_id else None)
+    panel._inspection_by_asset[recent_id] = {"card": card, "details": details}
+
+    panel._start_project_operation(
+        recent_id,
+        "Rename project",
+        lambda _progress, _cancel: lf.io.set_project_title(project_path, "Recent renamed"),
+        backup=False,
+    )
+
+    assert lf.io.inspect_project_card(project_path).title == "Recent renamed"
+    assert next(iter(panel._project_operations.values()))["status"] == "completed"
+    assert not (tmp_path / "records").exists()
+
+
 def test_recent_scope_resolves_path_aliases(panel_module, tmp_path):
     watched = tmp_path / "watched"
     watched.mkdir()
@@ -959,11 +1184,10 @@ def test_unindexed_recent_open_actions_preserve_mru_and_library_safety(
     recent = panel._filtered_assets()[0]
     import_module("lfs_plugins.file_menu")
 
-    assert [item["action"] for item in panel._asset_context_menu_items(recent)] == [
-        "load"
-    ]
+    expected_actions = ["load"] + (["show_in_folder"] if exists else [])
+    assert [item["action"] for item in panel._asset_context_menu_items(recent)] == expected_actions
     assert panel._select_asset_id(recent["id"]) is True
-    assert inspections == [([], "")]
+    assert inspections == [([recent], recent["id"])]
     assert panel.get_contents_rows() == []
 
     shell = _Element()
@@ -2733,7 +2957,8 @@ def test_A4_list_gallery_header_fits_before_modified(panel_module, width, modifi
             assert model.func_bindings[binding]() == f'{value:.1f}dp'
         columns = list_columns(width)
         visible = 2 + sum(columns[key] for key in ('size', 'modified', 'folder'))
-        assert sum(widths.values()) + 24 + 16 + 32 + 8 <= width + 0.1
+        # Fixed chrome includes the dedicated 32 dp column after Size.
+        assert sum(widths.values()) + 24 + 16 + 32 + 8 + 32 <= width + 0.1
         assert widths['name'] >= 80
         measured = dict(gallery=220, size=87, modified=132, folder=180)
         fitted = list_column_widths(width, overrides, measured)
@@ -3062,3 +3287,79 @@ def test_image_file_thumbnail_uses_native_decode_and_cancel_keeps_dialog(panel_m
     panel.confirm_project_dialog()
     assert panel._dialog_kind == "update_thumbnail"
     assert closed == []
+
+
+def test_asset_menu_button_anchors_menu_without_mouse_position(
+    panel_module, monkeypatch
+):
+    panel = panel_module.AssetManagerPanel()
+    asset = _project()
+    panel._asset_index = _index(assets={asset["id"]: asset})
+    shell = _Element()
+    button = _Element(
+        {"data-asset-id": asset["id"], "data-asset-action": "menu"}, shell
+    )
+    button.absolute_left = 310.0
+    button.absolute_top = 42.0
+    button.absolute_height = 24.0
+    monkeypatch.setattr(panel_module.lf.ui, "get_mouse_screen_pos", None)
+    event = _Event(shell, button)
+
+    panel._on_asset_manager_click(event)
+
+    assert panel_module.lf._test_state.context_menus[-1]["position"] == (310.0, 66.0)
+    assert event.stopped is True
+
+
+@pytest.mark.parametrize("key_name", ["KI_RETURN", "KI_SPACE"])
+def test_asset_menu_button_is_left_to_native_keyboard_activation(panel_module, key_name):
+    panel = panel_module.AssetManagerPanel()
+    asset = _project()
+    panel._asset_index = _index(assets={asset["id"]: asset})
+    panel._selected_asset_ids = {asset["id"]}
+    panel._selection_cursor_id = asset["id"]
+    loaded = []
+    quick_look = []
+    panel._load_asset = loaded.append
+    panel.open_quick_look = lambda: quick_look.append(asset["id"])
+    shell = _Element()
+    button = _Element(
+        {"data-asset-id": asset["id"], "data-asset-action": "menu"}, shell
+    )
+    event = _Event(
+        shell,
+        button,
+        params={"key_identifier": str(getattr(panel_module, key_name))},
+    )
+
+    panel._on_asset_results_keydown(event)
+    panel._on_asset_manager_keydown(event)
+
+    assert loaded == []
+    assert quick_look == []
+    assert panel_module.lf._test_state.context_menus == []
+    assert event.stopped is False
+
+
+@pytest.mark.parametrize("action", ["gallery:publish", "project:contents"])
+def test_removed_asset_context_action_does_not_reuse_previous_selection(
+    panel_module, action
+):
+    panel = panel_module.AssetManagerPanel()
+    first = _project(id="first", project_uuid="first", name="First")
+    second = _project(id="second", project_uuid="second", name="Second")
+    panel._asset_index = _index(assets={first["id"]: first, second["id"]: second})
+    panel._selected_asset_ids = {second["id"]}
+    panel._selection_cursor_id = second["id"]
+    gallery_actions = []
+    project_actions = []
+    panel._gallery_command = gallery_actions.append
+    panel.open_project_operation = lambda _handle, _event, args: project_actions.extend(args)
+    assert panel._show_asset_context_menu(first["id"]) is True
+    del panel._asset_index.assets[first["id"]]
+
+    panel_module.lf._test_state.context_menus[-1]["on_action"](action)
+
+    assert panel.get_selected_asset_id() == second["id"]
+    assert gallery_actions == []
+    assert project_actions == []
