@@ -188,7 +188,7 @@ jobs:
           fi
 
           # Use existing icon, or create a temporary SVG if none was installed
-          ICON_FILE=$(find dist -name "*.png" -o -name "*.svg" | head -n 1)
+          ICON_FILE=$(find dist -name "${EXE_NAME}.png" -o -name "${EXE_NAME}.svg" | head -n 1)
           if [ -z "$ICON_FILE" ]; then
             ICON_FILE="dist/${EXE_NAME}.svg"
             cat > "$ICON_FILE" <<EOF
