@@ -16,6 +16,7 @@ jobs:
     env:
       DEBIAN_FRONTEND: noninteractive
       VCPKG_ROOT: '${{ github.workspace }}/vcpkg'
+      VCPKG_DEFAULT_BINARY_CACHE: /github/home/.cache/vcpkg/archives
       CC: gcc-14
       CXX: g++-14
       VCPKG_BUILD_TYPE: release
@@ -190,12 +191,25 @@ jobs:
           EOF
           fi
 
+          # Generate exclude arguments dynamically for all CUDA libraries
+          CUDA_EXCLUDES=()
+          if [ -d "/usr/local/cuda/lib64" ]; then
+            for lib in /usr/local/cuda/lib64/*.so*; do
+              [ -e "$lib" ] || continue
+              CUDA_EXCLUDES+=("--exclude-library" "$(basename "$lib")")
+            done
+          fi
+          
+          # Explicitly exclude the driver API which might resolve from host system paths
+          CUDA_EXCLUDES+=("--exclude-library" "libcuda.so.1" "--exclude-library" "libcuda.so")
+
           # Build AppImage
           ./linuxdeploy-x86_64.AppImage \
             --appdir dist \
             --executable "$EXE_PATH" \
             --desktop-file "$DESKTOP_FILE" \
             --icon-file "$ICON_FILE" \
+            "${CUDA_EXCLUDES[@]}" \
             --output appimage
 
           # Rename output
