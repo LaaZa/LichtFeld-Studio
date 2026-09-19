@@ -233,7 +233,7 @@ jobs:
             --output appimage
 
           # Rename output
-          mv *.AppImage LichtFeld-Studio-Ubuntu26.04-CUDA13.AppImage
+          mv LichtFeld*Studio*.AppImage LichtFeld-Studio-Ubuntu26.04-CUDA13.AppImage
       - name: Upload Build Artifact (Actions Tab)
         uses: actions/upload-artifact@v4
         with:
