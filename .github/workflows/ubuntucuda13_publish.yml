@@ -39,35 +39,24 @@ jobs:
           update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
                               --slave /usr/bin/g++ g++ /usr/bin/g++-14
       - name: Configure environment variables
-        run: >
+        run: |
           echo "/usr/bin" >> $GITHUB_PATH
-
           echo "/usr/local/cuda/bin" >> $GITHUB_PATH
-
           echo "CMAKE_MAKE_PROGRAM=/usr/bin/ninja" >> $GITHUB_ENV
-
-          echo "LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}" >>
-          $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
       - name: Checkout source
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           submodules: recursive
       - name: Free disk space
-        run: >
+        run: |
           apt-get clean
-
           rm -rf /var/lib/apt/lists/*
-
-          rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache
-          /usr/local/lib/android /opt/az
-
+          rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache /usr/local/lib/android /opt/az
           rm -rf /usr/local/cuda/nsight* /usr/local/cuda/compute-sanitizer
-
           rm -rf /usr/local/cuda/extras /usr/local/cuda/tools
-
           rm -rf /usr/local/cuda/doc
-
           find /usr/local/cuda/targets/x86_64-linux/lib -name '*.a' \
             ! -name 'libcudart_static.a' \
             ! -name 'libcudadevrt.a' \
@@ -134,106 +123,74 @@ jobs:
             -DCMAKE_C_FLAGS="-pipe" \
             -DCMAKE_CXX_FLAGS="-pipe"
       - name: Clean vcpkg buildtrees
-        run: >
-          rm -rf build/vcpkg_installed/vcpkg/blds
-          build/vcpkg_installed/vcpkg/pkgs
-
-          rm -rf "${{ env.VCPKG_ROOT }}"/buildtrees "${{ env.VCPKG_ROOT
-          }}"/downloads "${{ env.VCPKG_ROOT }}"/packages
+        run: |
+          rm -rf build/vcpkg_installed/vcpkg/blds build/vcpkg_installed/vcpkg/pkgs
+          rm -rf "${{ env.VCPKG_ROOT }}"/buildtrees "${{ env.VCPKG_ROOT }}"/downloads "${{ env.VCPKG_ROOT }}"/packages
       - name: Build
         run: cmake --build build -j $(nproc)
       - name: Prepare install payload
         run: |
           DESTDIR=dist cmake --install build
       - name: Package Raw Artifact Tarball
-        run: >
-          # Package the raw bin/libs before linuxdeploy pulls in system
-          dependencies
-
+        run: |
+          # Package the raw bin/libs before linuxdeploy pulls in system dependencies
           cd dist
-
           tar -czvf ../LichtFeld-Studio-Ubuntu26.04-CUDA13.tar.gz usr/
-
           cd ..
       - name: Build AppImage
-        run: >
+        run: |
           export APPIMAGE_EXTRACT_AND_RUN=1
 
-
           # Download linuxdeploy
-
-          wget -q
-          https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           chmod +x linuxdeploy-x86_64.AppImage
 
-
           # Ensure target lib directory exists
-
           mkdir -p dist/usr/lib
 
-
-          # Copy internal libraries from multiarch directory to dist/usr/lib/ so
-          linuxdeploy detects them
-
+          # Copy internal libraries from multiarch directory to dist/usr/lib/ so linuxdeploy detects them
           if [ -d "dist/usr/lib/x86_64-linux-gnu" ]; then
             cp -rn dist/usr/lib/x86_64-linux-gnu/* dist/usr/lib/ 2>/dev/null || true
           fi
 
-
           # Set LD_LIBRARY_PATH so linuxdeploy scans internal project libraries
-
-          export
-          LD_LIBRARY_PATH="$PWD/dist/usr/lib/x86_64-linux-gnu:$PWD/dist/usr/lib:$LD_LIBRARY_PATH"
-
+          export LD_LIBRARY_PATH="$PWD/dist/usr/lib/x86_64-linux-gnu:$PWD/dist/usr/lib:$LD_LIBRARY_PATH"
 
           # Find the main executable
-
           EXE_PATH=$(find dist/usr/bin -type f -executable | head -n 1)
-
           if [ -z "$EXE_PATH" ]; then
             echo "Error: No executable found in dist/usr/bin"
             exit 1
           fi
-
           EXE_NAME=$(basename "$EXE_PATH")
 
-
-          # Use existing Desktop file, or create a temporary one if none was
-          installed
-
+          # Use existing Desktop file, or create a temporary one if none was installed
           DESKTOP_FILE=$(find dist -name "*.desktop" | head -n 1)
-
           if [ -z "$DESKTOP_FILE" ]; then
             DESKTOP_FILE="dist/${EXE_NAME}.desktop"
             cat > "$DESKTOP_FILE" <<EOF
-              [Desktop Entry]
-              Type=Application
-              Name=LichtFeld Studio
-              Exec=$EXE_NAME
-              Icon=$EXE_NAME
-              Categories=Graphics;
-              EOF
+          [Desktop Entry]
+          Type=Application
+          Name=LichtFeld Studio
+          Exec=$EXE_NAME
+          Icon=$EXE_NAME
+          Categories=Graphics;
+          EOF
           fi
 
-
           # Use existing icon, or create a temporary SVG if none was installed
-
           ICON_FILE=$(find dist -name "*.png" -o -name "*.svg" | head -n 1)
-
           if [ -z "$ICON_FILE" ]; then
             ICON_FILE="dist/${EXE_NAME}.svg"
             cat > "$ICON_FILE" <<EOF
-              <svg width="256" height="256" xmlns="http://www.w3.org/2000/svg">
-                <rect width="256" height="256" fill="#333333"/>
-                <text x="128" y="140" font-family="Arial" font-size="48" text-anchor="middle" fill="#ffffff">LFS</text>
-              </svg>
-              EOF
+          <svg width="256" height="256" xmlns="http://www.w3.org/2000/svg">
+            <rect width="256" height="256" fill="#333333"/>
+            <text x="128" y="140" font-family="Arial" font-size="48" text-anchor="middle" fill="#ffffff">LFS</text>
+          </svg>
+          EOF
           fi
 
-
           # Build AppImage
-
           ./linuxdeploy-x86_64.AppImage \
             --appdir dist \
             --executable "$EXE_PATH" \
@@ -242,8 +199,7 @@ jobs:
             --output appimage
 
           # Rename output
-
-          mv *.AppImage LichtFeld-Studio-CUDA13.AppImage
+          mv *.AppImage LichtFeld-Studio-Ubuntu26.04-CUDA13.AppImage
       - name: Upload Build Artifact (Actions Tab)
         uses: actions/upload-artifact@v4
         with:
@@ -256,7 +212,7 @@ jobs:
           tag_name: 'build-${{ github.run_id }}'
           name: 'LichtFeld Studio Build #${{ github.run_number }}'
           files: |
-            LichtFeld-Studio-Ubuntu26.04-CUDA13.4.AppImage
-            LichtFeld-Studio-Ubuntu26.04-CUDA13.4.tar.gz
+            LichtFeld-Studio-Ubuntu26.04-CUDA13.AppImage
+            LichtFeld-Studio-Ubuntu26.04-CUDA13.tar.gz
         env:
           GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
