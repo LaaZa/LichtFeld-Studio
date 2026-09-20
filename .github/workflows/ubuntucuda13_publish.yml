@@ -186,7 +186,7 @@ jobs:
           [Desktop Entry]
           Type=Application
           Name=LichtFeld Studio
-          Exec=$EXE_NAME
+          Exec=LichtFeld-Studio.sh
           Icon=$EXE_NAME
           Categories=Graphics;
           EOF
