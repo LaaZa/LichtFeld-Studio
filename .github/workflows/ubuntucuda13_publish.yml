@@ -118,6 +118,7 @@ jobs:
             -DBUILD_FORMAT_TESTS=OFF \
             -DBUILD_TESTS=OFF \
             -DBUILD_PYTHON_STUBS=OFF \
+            -DBUILD_PORTABLE=ON \
             -DLFS_DEV_IMPORT_SOURCE_PYTHON=OFF \
             -DLFS_DEV_IMPORT_SOURCE_RESOURCES=OFF \
             -DLFS_ENABLE_CUDA_DEVICE_DEBUG=OFF \
@@ -169,13 +170,17 @@ jobs:
           #!/bin/bash
           # SPDX-FileCopyrightText: 2025 LichtFeld Studio Authors
           # SPDX-License-Identifier: GPL-3.0-or-later
-          SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+          
+          # Resolve symlinks to get the true physical directory (usr/bin)
+          REAL_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+          SCRIPT_DIR="$( cd "$( dirname "$REAL_PATH" )" && pwd )"
+          
           export LD_LIBRARY_PATH="$SCRIPT_DIR/../lib:$LD_LIBRARY_PATH"
           exec "$SCRIPT_DIR/LichtFeld-Studio" "$@"
           EOF
           chmod +x dist/usr/bin/LichtFeld-Studio.sh
 
-          EXE_PATH="dist/usr/bin/LichtFeld-Studio.sh"
+          EXE_PATH="dist/usr/bin/LichtFeld-Studio"
           EXE_NAME="LichtFeld-Studio"
 
           # Use existing Desktop file, or create a temporary one if none was installed
