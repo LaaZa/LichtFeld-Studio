@@ -165,13 +165,18 @@ jobs:
           # Set LD_LIBRARY_PATH so linuxdeploy scans internal project libraries
           export LD_LIBRARY_PATH="$PWD/dist/usr/lib/x86_64-linux-gnu:$PWD/dist/usr/lib:$LD_LIBRARY_PATH"
 
-          # Find the main executable
-          EXE_PATH=$(find dist/usr/bin -type f -executable | head -n 1)
-          if [ -z "$EXE_PATH" ]; then
-            echo "Error: No executable found in dist/usr/bin"
-            exit 1
-          fi
-          EXE_NAME=$(basename "$EXE_PATH")
+          cat > dist/usr/bin/LichtFeld-Studio.sh <<'EOF'
+          #!/bin/bash
+          # SPDX-FileCopyrightText: 2025 LichtFeld Studio Authors
+          # SPDX-License-Identifier: GPL-3.0-or-later
+          SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+          export LD_LIBRARY_PATH="$SCRIPT_DIR/../lib:$LD_LIBRARY_PATH"
+          exec "$SCRIPT_DIR/LichtFeld-Studio" "$@"
+          EOF
+          chmod +x dist/usr/bin/LichtFeld-Studio.sh
+
+          EXE_PATH="dist/usr/bin/LichtFeld-Studio.sh"
+          EXE_NAME="LichtFeld-Studio"
 
           # Use existing Desktop file, or create a temporary one if none was installed
           DESKTOP_FILE=$(find dist -name "*.desktop" | head -n 1)
