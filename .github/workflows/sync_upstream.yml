@@ -49,8 +49,12 @@ jobs:
             echo "New upstream changes detected. Pushing to master..."
             git push origin master
 
+            # Grab the short commit hash of the upstream branch we just merged
+            UPSTREAM_SHA=$(git rev-parse --short upstream/master)
+
             echo "Triggering CUDA Build workflow..."
-            gh workflow run "Ubuntu CUDA 13 Build Publish" --ref master
+            # Pass the upstream hash as an input via -f
+            gh workflow run "Ubuntu CUDA 13 Build Publish" --ref master -f upstream_sha="$UPSTREAM_SHA"
           else
             echo "No new upstream changes. Skipping build trigger."
           fi
