@@ -1,6 +1,11 @@
 name: Ubuntu CUDA 13 Build Publish
 'on':
-  workflow_dispatch: null
+  workflow_dispatch:
+    inputs:
+      upstream_sha:
+        description: 'Upstream Commit SHA'
+        required: false
+        default: 'manual-build'
 permissions:
   contents: write
 jobs:
@@ -50,6 +55,10 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+      - name: Get Short SHA
+        id: vars
+        run: echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+        
       - name: Free disk space
         run: |
           apt-get clean
@@ -300,8 +309,8 @@ jobs:
       - name: Publish to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: 'build-${{ github.run_id }}'
-          name: 'LichtFeld Studio Build #${{ github.run_number }}'
+          tag_name: 'build-${{ steps.vars.outputs.short_sha }}'
+          name: 'LichtFeld Studio Build ${{ inputs.upstream_sha }}'
           files: |
             LichtFeld-Studio-Ubuntu26.04-CUDA13.AppImage
             LichtFeld-Studio-Ubuntu26.04-CUDA13.tar.gz
