@@ -32,7 +32,7 @@ jobs:
             ca-certificates gpg wget curl git unzip tar pkg-config \
             cmake gcc-14 g++-14 ccache ninja-build \
             zip python3 python3-dev python3-venv libxinerama-dev libxcursor-dev xorg-dev libglu1-mesa-dev \
-            libwayland-dev libxkbcommon-dev libegl-dev libdecor-0-dev libibus-1.0-dev libdbus-1-dev \
+            libwayland-dev wayland-protocols libvulkan-dev libxkbcommon-dev libegl-dev libdecor-0-dev libibus-1.0-dev libdbus-1-dev \
             libsystemd-dev libgtk-3-dev \
             nasm autoconf autoconf-archive automake libtool \
             file desktop-file-utils
@@ -133,6 +133,9 @@ jobs:
       - name: Prepare install payload
         run: |
           DESTDIR=dist cmake --install build
+          # Bundle the vcpkg Python standard library
+          mkdir -p dist/usr/lib
+          cp -r build/vcpkg_installed/x64-linux/lib/python3.* dist/usr/lib/
       - name: Package Raw Artifact Tarball
         run: |
           # Package the raw bin/libs before linuxdeploy pulls in system dependencies
@@ -176,6 +179,11 @@ jobs:
           SCRIPT_DIR="$( cd "$( dirname "$REAL_PATH" )" && pwd )"
           
           export LD_LIBRARY_PATH="$SCRIPT_DIR/../lib:$LD_LIBRARY_PATH"
+          
+          # Force embedded Python to load from the bundled standard library
+          export PYTHONHOME="$SCRIPT_DIR/.."
+          export PYTHONPATH="$SCRIPT_DIR/../lib/python3.12"
+          
           exec "$SCRIPT_DIR/LichtFeld-Studio" "$@"
           EOF
           chmod +x dist/usr/bin/LichtFeld-Studio.sh
