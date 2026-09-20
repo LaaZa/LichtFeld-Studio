@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write # Required for `gh workflow run`
 
     steps:
       - name: Checkout target branch
@@ -17,7 +18,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Fetch and Merge Upstream (Ignoring Upstream Workflows)
+      - name: Fetch, Merge Upstream, and Trigger Build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -25,6 +28,9 @@ jobs:
           git remote add upstream https://github.com/MrNeRF/LichtFeld-Studio.git
           git fetch upstream
           
+          # Record starting commit SHA
+          BEFORE_SHA=$(git rev-parse HEAD)
+
           # 1. Merge upstream without committing immediately
           git checkout master
           git merge upstream/master --no-commit --no-ff || true
@@ -35,5 +41,16 @@ jobs:
           # 3. Commit the merge result
           git commit -m "Merge upstream/master while preserving fork workflows" || echo "No changes to commit"
           
-          # 4. Push using standard GITHUB_TOKEN (no special PAT needed)
-          git push origin master
+          # Record ending commit SHA
+          AFTER_SHA=$(git rev-parse HEAD)
+
+          # 4. If new upstream commits were merged, push and trigger the build workflow
+          if [ "$BEFORE_SHA" != "$AFTER_SHA" ]; then
+            echo "New upstream changes detected. Pushing to master..."
+            git push origin master
+
+            echo "Triggering CUDA Build workflow..."
+            gh workflow run "Ubuntu CUDA 13 Build Publish" --ref master
+          else
+            echo "No new upstream changes. Skipping build trigger."
+          fi
