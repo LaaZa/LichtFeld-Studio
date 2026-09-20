@@ -107,6 +107,10 @@ jobs:
             hashFiles('vcpkg.json', 'vcpkg-configuration.json',
             '.github/overlays/**') }}
           restore-keys: 'vcpkg-pkgs-${{ runner.os }}-linux-gui-prebuilt-ort-v2-'
+
+      - name: Ensure vcpkg cache directory exists
+        run: mkdir -p /github/home/.cache/vcpkg/archives
+          
       - name: Configure
         run: |
           cmake -B build -S . -G Ninja \
@@ -229,20 +233,25 @@ jobs:
 
           # Add explicit SONAME exclusions for common CUDA runtime and driver libraries
           EXTRA_EXCLUDES=(
-            # Core system & C/C++ runtimes (must come from host OS)
+            # 1. Compiler Base
             "libstdc++.so.6" "libstdc++.so"
             "libgcc_s.so.1" "libgcc_s.so"
             "libgomp.so.1" "libgomp.so"
-            "libglib-2.0.so.0" "libglib-2.0.so"
-            "libpcre2-8.so.0" "libpcre2-8.so"
-            "libz.so.1" "libz.so"
-            "libcrypto.so.3" "libcrypto.so"
             
-            # Display drivers & Vulkan
+            # 2. Fonts
+            "libfontconfig.so.1" "libfontconfig.so"
+            
+            # 3. Graphics & Display Server
             "libvulkan.so.1" "libvulkan.so"
             "libGL.so.1" "libGL.so"
             "libEGL.so.1" "libEGL.so"
+            "libGLX.so.0" "libGLX.so"
+            "libdrm.so.2" "libdrm.so"
+            "libgbm.so.1" "libgbm.so"
             "libwayland-client.so.0" "libwayland-server.so.0"
+            "libwayland-cursor.so.0" "libwayland-cursor.so"
+            "libwayland-egl.so.1" "libwayland-egl.so"
+            "libxkbcommon.so.0" "libxkbcommon.so"
             
             # CUDA libraries
             "libcuda.so.1" "libcuda.so"
