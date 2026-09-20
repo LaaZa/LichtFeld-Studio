@@ -95,18 +95,18 @@ jobs:
         with:
           path: /github/home/.cache/ccache
           key: >-
-            ccache-${{ runner.os }}-${{ matrix.build_type }}-${{ github.run_id
+            ccache-${{ runner.os }}-${{ matrix.build_type }}-v2-${{ github.run_id
             }}
-          restore-keys: 'ccache-${{ runner.os }}-${{ matrix.build_type }}-'
+          restore-keys: 'ccache-${{ runner.os }}-${{ matrix.build_type }}-v2-'
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         with:
           path: /github/home/.cache/vcpkg/archives
           key: >-
-            vcpkg-pkgs-${{ runner.os }}-linux-gui-prebuilt-ort-v1-${{
+            vcpkg-pkgs-${{ runner.os }}-linux-gui-prebuilt-ort-v2-${{
             hashFiles('vcpkg.json', 'vcpkg-configuration.json',
             '.github/overlays/**') }}
-          restore-keys: 'vcpkg-pkgs-${{ runner.os }}-linux-gui-prebuilt-ort-'
+          restore-keys: 'vcpkg-pkgs-${{ runner.os }}-linux-gui-prebuilt-ort-v2-'
       - name: Configure
         run: |
           cmake -B build -S . -G Ninja \
@@ -234,6 +234,7 @@ jobs:
             "libgcc_s.so.1" "libgcc_s.so"
             "libgomp.so.1" "libgomp.so"
             "libglib-2.0.so.0" "libglib-2.0.so"
+            "libpcre2-8.so.0" "libpcre2-8.so"
             "libz.so.1" "libz.so"
             "libcrypto.so.3" "libcrypto.so"
             
