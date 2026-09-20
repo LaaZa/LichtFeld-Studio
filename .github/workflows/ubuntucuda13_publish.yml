@@ -269,6 +269,17 @@ jobs:
             CUDA_EXCLUDES+=("--exclude-library" "$elib")
           done
 
+          echo "Purging host-bound libraries from AppDir..."
+          find dist -name "libvulkan.so*" -delete
+          find dist -name "libGL.so*" -delete
+          find dist -name "libEGL.so*" -delete
+          find dist -name "libGLX.so*" -delete
+          find dist -name "libwayland-*.so*" -delete
+          find dist -name "libxkbcommon.so*" -delete
+          find dist -name "libdrm.so*" -delete
+          find dist -name "libgbm.so*" -delete
+          find dist -name "libfontconfig.so*" -delete
+
           # Build AppImage
           ./linuxdeploy-x86_64.AppImage \
             --appdir dist \
