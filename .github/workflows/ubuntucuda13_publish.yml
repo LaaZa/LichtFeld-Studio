@@ -309,7 +309,7 @@ jobs:
       - name: Publish to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: 'build-${{ steps.vars.outputs.short_sha }}'
+          tag_name: 'build-${{ github.run_id }}'
           name: 'LichtFeld Studio Build ${{ inputs.upstream_sha }}'
           files: |
             LichtFeld-Studio-Ubuntu26.04-CUDA13.AppImage
