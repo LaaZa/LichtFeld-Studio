@@ -35,8 +35,10 @@ jobs:
           git checkout master
           git merge upstream/master --no-commit --no-ff || true
           
-          # 2. Restore your local .github/workflows directory from HEAD
+          # 2. Force .github/workflows to match HEAD completely
+          git reset HEAD -- .github/workflows
           git checkout HEAD -- .github/workflows
+          git clean -fd .github/workflows
           
           # 3. Commit the merge result
           git commit -m "Merge upstream/master while preserving fork workflows" || echo "No changes to commit"
