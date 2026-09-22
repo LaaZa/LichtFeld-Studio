@@ -775,7 +775,7 @@ def test_add_folder_uses_real_directory_picker(panel_module):
     panel_module.lf._test_state.folder_dialog_path = selected
     calls = []
     panel._asset_index = _index(
-        add_folder=lambda path: calls.append(path)
+        add_folder=lambda path, recursive=None: calls.append((path, recursive))
         or SimpleNamespace(id="selected-folder"),
 
     )
@@ -786,7 +786,7 @@ def test_add_folder_uses_real_directory_picker(panel_module):
 
     assert len(panel_module.lf._test_state.confirm_dialogs) == 1
     panel_module.lf._test_state.confirm_dialogs[-1][3]("projects.action.include_subfolders")
-    assert calls == [selected]
+    assert calls == [(selected, True)]
     assert panel._selected_folder_id == "selected-folder"
 
 def test_folder_counts_match_search_results(panel_module):
@@ -2398,7 +2398,9 @@ def test_add_folder_scans_only_the_added_folder(panel_module, monkeypatch):
     panel = panel_module.AssetManagerPanel()
     panel._handle = _Handle()
     panel._asset_index = _index(
-        add_folder=lambda path: SimpleNamespace(id="selected-folder", path=path),
+        add_folder=lambda path, recursive=None: SimpleNamespace(
+            id="selected-folder", path=path, recursive=recursive
+        ),
 
     )
     assert panel._add_folder_from_path("/tmp/mrnf_local") == "selected-folder"
@@ -2406,6 +2408,36 @@ def test_add_folder_scans_only_the_added_folder(panel_module, monkeypatch):
     assert one_calls == [("selected-folder", "/tmp/mrnf_local")]
     assert all_calls == []
     panel.on_unmount(_Document())
+
+
+def test_rescan_folder_preserves_non_recursive_policy(panel_module):
+    calls = []
+    panel = panel_module.AssetManagerPanel()
+    panel._asset_index = _index(
+        folders={
+            "selected-folder": {
+                "id": "selected-folder",
+                "path": "/tmp/mrnf_local",
+                "recursive": False,
+            }
+        }
+    )
+    panel.refresh_catalog = lambda **kwargs: calls.append(("refresh", kwargs))
+    panel._scan_asset_folders = lambda **kwargs: calls.append(("scan", kwargs))
+
+    panel._handle_folder_context_action("rescan", "selected-folder")
+
+    assert calls == [
+        ("refresh", {"scan_folders": False}),
+        (
+            "scan",
+            {
+                "folder_id": "selected-folder",
+                "directory": "/tmp/mrnf_local",
+                "recursive": False,
+            },
+        ),
+    ]
 
 def test_on_mount_scans_all_folders_only_before_first_completed_scan(
     panel_module, monkeypatch
@@ -3059,18 +3091,22 @@ def test_gallery_union_has_one_linked_pair_and_remote_projection(panel_module):
     assert [r['id'] for r in panel._filtered_assets()] == [local['id']]
 
 
-def test_gallery_cover_refreshes_the_saved_project_card(panel_module, monkeypatch):
-    panel, local, remote = _gallery_fixture(panel_module)
+def test_thumbnail_dialog_only_updates_the_local_project(panel_module):
+    panel, local, _ = _gallery_fixture(panel_module)
+    panel._select_asset_id(local["id"])
+    panel._dialog_kind = "update_thumbnail"
+    panel._dialog_data = {"path": local["path"], "source": "viewport",
+                          "sources": ["viewport"], "use_gallery_cover": True,
+                          "gallery_cover_available": True}
+    body, _ = panel._project_form()
+    assert 'use_gallery_cover' not in body
     calls = []
-    service = SimpleNamespace(identity=lambda: "account", set_cover=lambda *args: calls.append(("cover", args)))
-    controller = SimpleNamespace(service=service, refresh=lambda: None, _schedule_poll=lambda: None)
-    panel._controller = lambda: controller
-    panel._library_command = lambda *args: calls.append(args)
-    monkeypatch.setattr(panel_module.lf, "io", SimpleNamespace(
-        inspect_project=lambda _: SimpleNamespace(project_uuid=local["id"]),
-        read_preview=lambda _: b"saved thumbnail"), raising=False)
-    panel._gallery_thumbnail_callback(local)()
-    assert calls == [("verify_asset", local["id"]), ("cover", (local["id"], remote, b"saved thumbnail"))]
+    panel._start_project_operation = lambda *args, **kwargs: calls.append(kwargs)
+    assert panel._start_thumbnail_operation(local)
+    assert len(calls) == 1
+    assert calls[0].get("after") is None
+    assert calls[0]["reverify_asset"] is True
+
 
 def test_gallery_attention_scope_and_state_specific_context_menu(panel_module):
     panel, local, remote = _gallery_fixture(panel_module)
@@ -3461,6 +3497,8 @@ def test_P13_space_toggles_quick_look_and_arrows_update_its_project(panel_module
 
 
 def test_compact_view_menu_retains_every_collapsed_toolbar_action(panel_module):
+    import xml.etree.ElementTree as ET
+
     panel = panel_module.AssetManagerPanel()
     captured = {}
     panel._show_shared_context_menu = lambda items, choose: captured.update(
@@ -3480,7 +3518,28 @@ def test_compact_view_menu_retains_every_collapsed_toolbar_action(panel_module):
     rcss = (resources / "asset_manager.rcss").read_text()
     assert 'class="asset-button asset-button--icon asset-button--toolbar24 asset-add-existing-icon"' in rml
     assert 'class="asset-button asset-button--icon asset-panel-close"' in rml
+    root = ET.fromstring(rml)
+    primary_toolbar = root.find(
+        ".//div[@class='toolbar-row toolbar-row-primary']"
+    )
+    assert primary_toolbar is not None
+    direct_child_classes = {
+        child.get("class", "") for child in list(primary_toolbar)
+    }
+    assert "asset-search-box" in direct_child_classes
+    assert "asset-button asset-button--icon asset-panel-close" in direct_child_classes
     assert rml.count('class="asset-button asset-button--icon asset-view-button"') == 2
+    toolbar_rules = [
+        rule.split("}", 1)[0]
+        for rule in rcss.split(".toolbar-row-primary {")[1:]
+    ]
+    assert any("position: relative" in rule for rule in toolbar_rules)
+    assert any("padding: 8dp 40dp 8dp 8dp" in rule for rule in toolbar_rules)
+    close_rule = rcss.split(".asset-panel-close {", 1)[1].split("}", 1)[0]
+    assert "position: absolute" in close_rule
+    assert "top: 8dp" in close_rule
+    assert "right: 8dp" in close_rule
+    assert "z-index: 1" in close_rule
     compact_rules = rcss.split(
         ".asset-shell.is-compact .asset-toolbar-filter", 1
     )[1].split(".asset-shell.is-medium", 1)[0]
@@ -3489,6 +3548,14 @@ def test_compact_view_menu_retains_every_collapsed_toolbar_action(panel_module):
         ".asset-shell.is-compact .asset-view-toggle-icons", 1
     )[1].split("}", 1)[0]
     assert "display: none" not in icon_rule
+    search_rule = compact_rules.split(
+        ".asset-shell.is-compact .asset-search-box", 1
+    )[1].split("}", 1)[0]
+    assert "flex-basis: 100%" in search_rule
+    assert "min-width: 0" in search_rule
+    assert ".asset-shell.is-compact .toolbar-row-primary { column-gap: 2dp; }" in rcss
+    assert ".asset-shell.is-compact .asset-view-toggle-icons { gap: 2dp; }" in rcss
+
 
 def test_A4_gallery_scopes_are_outside_the_scrolling_folder_content():
     import xml.etree.ElementTree as ET
