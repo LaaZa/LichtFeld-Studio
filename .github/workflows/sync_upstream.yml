@@ -56,7 +56,7 @@ jobs:
 
             echo "Triggering CUDA Build workflow..."
             # Pass the upstream hash as an input via -f
-            gh workflow run ubuntucuda13_publish.yml --ref master -f upstream_sha="$UPSTREAM_SHA"
+            gh workflow run ubuntucuda13_publish.yml -R "${{ github.repository }}" --ref master -f upstream_sha="$UPSTREAM_SHA"
           else
             echo "No new upstream changes. Skipping build trigger."
           fi
