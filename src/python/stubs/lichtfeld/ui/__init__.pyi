@@ -2015,6 +2015,11 @@ def save_spz_file_dialog(default_name: str = 'export') -> str:
     Open a save file dialog for SPZ files. Returns empty string if cancelled.
     """
 
+def save_glb_file_dialog(default_name: str = 'export') -> str:
+    """
+    Open a save file dialog for GLB (SPZ glTF) files. Returns empty string if cancelled.
+    """
+
 def save_usd_file_dialog(default_name: str = 'export') -> str:
     """
     Open a save file dialog for USD files. Returns empty string if cancelled.
@@ -2754,6 +2759,9 @@ def reset_scene_reconstruction_preferences() -> None:
 
 def get_mcp_preferences() -> dict:
     """Get effective MCP HTTP server preferences"""
+
+def get_mcp_access_token() -> str:
+    """Get the local MCP network access token"""
 
 def set_mcp_preferences(enabled: bool, expose_network: bool, port: int, request_logging: bool = False) -> bool:
     """Persist and immediately apply MCP HTTP server preferences"""

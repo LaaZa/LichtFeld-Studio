@@ -568,6 +568,7 @@ namespace lfs::vis {
                                : fmt == core::ExportFormat::SSOG                                                                                                                                           ? "SSOG"
                                : fmt == core::ExportFormat::SOG                                                                                                                                            ? "SOG"
                                : fmt == core::ExportFormat::SPZ                                                                                                                                            ? "SPZ"
+                               : fmt == core::ExportFormat::GLB                                                                                                                                            ? "GLB"
                                : fmt == core::ExportFormat::HTML_VIEWER                                                                                                                                    ? "HTML"
                                : fmt == core::ExportFormat::USD                                                                                                                                            ? "USD"
                                : fmt == core::ExportFormat::NUREC_USDZ                                                                                                                                     ? "USDZ"
@@ -3996,14 +3997,25 @@ namespace lfs::vis {
             return {};
         }
         if (!trainer_manager_->canStart()) {
-            if (trainer_manager_->isFinished()) {
-                return std::unexpected(std::format(
-                    "Training already completed at iteration {}; starting a new training run requires overwrite consent.",
-                    trainer_manager_->getCurrentIteration()));
-            }
-            return std::unexpected(std::string(
-                trainer_manager_->getActionBlockedReason(
-                    TrainingAction::Start)));
+            const std::string message =
+                trainer_manager_->isFinished()
+                    ? std::format(
+                          "Training already completed at iteration {}; starting a new training run requires overwrite consent.",
+                          trainer_manager_->getCurrentIteration())
+                    : std::string(
+                          trainer_manager_->getActionBlockedReason(
+                              TrainingAction::Start));
+            lfs::ErrorBus::instance().publish(makeFrameNotification(
+                lfs::ErrorCode::FailedPrecondition,
+                lfs::ErrorDomain::Training,
+                lfs::Severity::Error,
+                lfs::ErrorSurface::Modal,
+                message,
+                message,
+                {},
+                LFS_SOURCE_SITE_CURRENT(),
+                "training.start"));
+            return std::unexpected(message);
         }
         if (project_lifecycle_) {
             if (auto prepared =
