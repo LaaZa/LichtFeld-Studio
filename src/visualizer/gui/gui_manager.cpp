@@ -66,7 +66,6 @@
 #include "python/ui_hooks.hpp"
 #include "rendering/coordinate_conventions.hpp"
 #include "rendering/image_layout.hpp"
-#include "rendering/passes/scene_reprojection.hpp"
 #include "rendering/passes/vulkan_viewport_pass.hpp"
 #include "rendering/rendering_manager.hpp"
 #include "rendering/screen_overlay_renderer.hpp"
@@ -5307,21 +5306,6 @@ namespace lfs::vis::gui {
             // run after params.split_view is populated (split stitching is gated on
             // params.split_view.enabled).
             rendering_manager->bindViewportInteropParams(params, frame_slot, export_locked);
-
-            if (mesh_frame.scene_reprojectable && !export_locked && !params.split_view.enabled &&
-                params.external_scene_image != VK_NULL_HANDLE &&
-                params.external_scene_image_generation == mesh_frame.scene_image_generation) {
-                const auto& viewport = viewer_->getViewport();
-                const glm::mat4 current_view =
-                    lfs::rendering::makeViewMatrix(viewport.getRotationMatrix(), viewport.getTranslation());
-                if (current_view != mesh_frame.scene_view) {
-                    params.scene_reprojection = {
-                        .enabled = true,
-                        .source_to_current = sceneReprojectionMatrix(
-                            mesh_frame.scene_view, mesh_frame.scene_projection, current_view),
-                    };
-                }
-            }
         }
 
         // Use the same window-relative snapshot as cursor selection and hit tests.
@@ -5914,6 +5898,7 @@ namespace lfs::vis::gui {
         bool block_underlay_input = startup_overlay_blocking;
         {
             LOG_TIMER_THRESHOLD("gui_render.panel_setup.frame_state", 0.25);
+            rmlui_manager_.serviceEmojiFont();
             rmlui_manager_.beginFrameCursorTracking();
             modal_overlay_open = rml_modal_overlay_->isOpen();
             modal_overlay_pending = rml_modal_overlay_->hasPendingRequest();
@@ -6349,8 +6334,7 @@ namespace lfs::vis::gui {
             const float splitter_h = PanelLayoutManager::SPLITTER_H * current_ui_scale_;
             const float tab_bar_h = PanelLayoutManager::TAB_BAR_H * current_ui_scale_;
             const float avail_h = ph - 16.0f;
-            const float scene_h = std::max(80.0f * current_ui_scale_,
-                                           avail_h * panel_layout_.getScenePanelRatio() - splitter_h * 0.5f);
+            const float scene_h = panel_layout_.scenePanelHeight(avail_h, current_ui_scale_);
 
             RightPanelLayout rp_layout;
             rp_layout.pos = glm::vec2(screen.work_pos.x + screen.work_size.x - rpw, screen.work_pos.y);
@@ -8397,9 +8381,7 @@ namespace lfs::vis::gui {
         const float splitter_h = PanelLayoutManager::SPLITTER_H * dpi;
         const float tab_bar_h = PanelLayoutManager::TAB_BAR_H * dpi;
         const float avail_h = panel_h - 2.0f * kPanelPad;
-        const float scene_h =
-            std::max(80.0f * dpi,
-                     avail_h * panel_layout_.getScenePanelRatio() - splitter_h * 0.5f);
+        const float scene_h = panel_layout_.scenePanelHeight(avail_h, dpi);
         const float content_top = kPanelPad;
         const float tab_content_y = content_top + scene_h + splitter_h + tab_bar_h;
         const float tab_content_h =

@@ -151,10 +151,8 @@ def tr(key: str, **kwargs: Any) -> str:
     except Exception:
         result = key
     if kwargs:
-        try:
-            return result.format(**kwargs)
-        except Exception:
-            pass
+        from .localization import safe_format
+        return safe_format(result, **kwargs)
     return result
 
 
@@ -1256,6 +1254,11 @@ class AssetManagerPanel(GalleryAssetMixin, Panel):
             return getter(asset_id)
         return self._asset_index_assets().get(asset_id)
 
+    def catalog_entry_for_path(self, path: str) -> Optional[Dict[str, Any]]:
+        find_by_path = getattr(self._asset_index, "find_asset_by_path", None)
+        project = find_by_path(path) if path and callable(find_by_path) else None
+        return self._asset_dict(project.id) if project is not None else None
+
     @staticmethod
     def _project_path_key(path: Any) -> str:
         text = str(path or "").strip()
@@ -2279,7 +2282,7 @@ class AssetManagerPanel(GalleryAssetMixin, Panel):
                 "projects.status.showing_projects", self._last_asset_match_count
             )
         except Exception:
-            return str(self._last_asset_match_count)
+            return f"{self._last_asset_match_count:,}"
 
     def get_asset_search_empty(self) -> bool:
         return bool(self._search_query.strip()) and not self._filtered_assets()
@@ -3535,7 +3538,7 @@ class AssetManagerPanel(GalleryAssetMixin, Panel):
         path = str(asset.get("path") or "") if asset else ""
         if not asset_id or not path or not self._asset_index:
             return
-        label = tr("projects.action.move_to_trash")
+        label = tr("projects.dialog.trash_confirm")
 
         def confirmed(button: str) -> None:
             if button != label:
@@ -3553,9 +3556,9 @@ class AssetManagerPanel(GalleryAssetMixin, Panel):
                 self._request_model_update()
 
         lf.ui.confirm_dialog(
-            label,
-            f'{label}\n\n{path}',
-            [tr("common.cancel"), label],
+            tr("projects.dialog.trash_title"),
+            f'{tr("projects.dialog.trash_message")}\n\n{path}',
+            [label, tr("common.cancel")],
             confirmed,
             "error",
         )

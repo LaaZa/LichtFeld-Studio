@@ -491,6 +491,7 @@ set(TEST_FILES
     test_panel_registry_animation_demand.cpp
     test_panel_registry_default_closed.cpp
     test_panel_layout_render_demand.cpp
+    test_number_format.cpp
     test_reactive_store.cpp
     test_video_color_convert.cpp
     test_python_integration.cpp
@@ -565,6 +566,7 @@ set(TEST_FILES
     test_operator_return_value.cpp
     test_sdl_rml_key_mapping.cpp
     test_rml_path_utils.cpp
+    test_rml_system_interface.cpp
     test_rml_drag_payload.cpp
     test_context_menu_placement.cpp
     test_rml_static_style_boundaries.cpp
@@ -595,7 +597,6 @@ set(TEST_FILES
     test_undistort.cpp
     test_viewport_region_utils.cpp
     test_viewport_interop_decision.cpp
-    test_scene_reprojection.cpp
     test_mesh_data.cpp
     test_mesh_offscreen_renderer.cpp
     test_align_transform.cpp
