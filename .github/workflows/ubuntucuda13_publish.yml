@@ -98,6 +98,7 @@ jobs:
           set(VCPKG_MAX_CONCURRENCY 2)
           set(VCPKG_C_FLAGS "-march=x86-64-v3 -mtune=generic")
           set(VCPKG_CXX_FLAGS "-march=x86-64-v3 -mtune=generic")
+          list(APPEND VCPKG_CONFIGURE_MAKE_OPTIONS "--disable-avx512")
           EOF
       - name: Cache ccache
         uses: actions/cache@v4
