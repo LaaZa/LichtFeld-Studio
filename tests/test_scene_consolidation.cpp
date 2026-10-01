@@ -4,6 +4,8 @@
 
 #include "core/alloc_counter.hpp"
 #include "core/error.hpp"
+#include "core/event_bridge/scoped_handler.hpp"
+#include "core/events.hpp"
 #include "core/scene.hpp"
 #include "core/splat_data.hpp"
 #include "core/splat_data_transform.hpp"
@@ -11,6 +13,7 @@
 #include "core/uuid.hpp"
 #include "io/formats/ply.hpp"
 #include "io/splat_chapter.hpp"
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
@@ -696,4 +699,110 @@ TEST(SceneActiveShTest, PreservesInactiveDataAndNodeLimitsThroughConsolidationAn
             EXPECT_EQ(model->get_active_sh_degree(), degrees[i]);
         }
     }
+}
+
+namespace {
+    [[nodiscard]] std::unique_ptr<SplatData> make_alias_test_model(float x) {
+        return std::make_unique<SplatData>(
+            1,
+            Tensor::from_vector(std::vector<float>{x, 0.0f, 0.0f, x + 1.0f, 0.0f, 0.0f}, {2, 3}, Device::CPU),
+            Tensor::zeros({2, 1, 3}, Device::CPU),
+            Tensor::zeros({2, 3, 3}, Device::CPU),
+            Tensor::zeros({2, 3}, Device::CPU),
+            Tensor::from_vector(std::vector<float>{1, 0, 0, 0, 1, 0, 0, 0}, {2, 4}, Device::CPU),
+            Tensor::zeros({2, 1}, Device::CPU), 1.0f);
+    }
+} // namespace
+
+TEST(SceneSingleNodeAliasTest, ClearAndSwapDropTheAlias) {
+    Scene scene;
+    ASSERT_NE(scene.addSplat("single", make_alias_test_model(0.0f)), lfs::core::NULL_NODE);
+    ASSERT_NE(scene.getCombinedModel(), nullptr);
+    auto previous = scene.swapNodeModel("single", make_alias_test_model(5.0f));
+    ASSERT_NE(previous, nullptr);
+    EXPECT_NE(scene.peekCombinedModel(), previous.get());
+    previous.reset();
+    (void)scene.getCombinedModel();
+    scene.clear();
+    EXPECT_EQ(scene.peekCombinedModel(), nullptr);
+}
+
+TEST(SceneCombinedImport, FailedBuildReportsOnceAndAllowsExplicitRetry) {
+    Scene scene;
+    scene.setImportValidation(true);
+    scene.addSplat("first", make_alias_test_model(0.0f));
+    scene.addSplat("second", make_alias_test_model(1.0f));
+    std::atomic<bool> fail{true};
+    scene.setCombinedModelAllocator([&](lfs::core::TensorShape shape, size_t, lfs::core::DataType dtype, std::string_view) -> Tensor {
+        if (fail.load())
+            throw std::runtime_error("allocation failed");
+        return Tensor::empty(std::move(shape), Device::CUDA, dtype);
+    });
+    int failures = 0;
+    std::atomic<int> ready{0};
+    lfs::event::ScopedHandler handler;
+    handler.subscribe<lfs::core::events::state::CombinedModelBuildReady>([&](const auto& event) {
+        if (event.scene == &scene)
+            ++ready;
+    });
+    handler.subscribe<lfs::core::events::state::CombinedModelBuildFailed>([&](const auto&) { ++failures; });
+    scene.requestCombinedModelBuild(true);
+    while (scene.combinedModelBuildPending()) {
+        (void)scene.combinedModelBuildError();
+        std::this_thread::yield();
+    }
+    EXPECT_EQ(failures, 1);
+    EXPECT_EQ(ready.load(), 1);
+    EXPECT_NE(scene.combinedModelBuildError(), "");
+    EXPECT_EQ(scene.getCombinedModel(), nullptr);
+    EXPECT_EQ(scene.getCombinedModel(), nullptr);
+    EXPECT_EQ(failures, 1);
+    fail.store(false);
+    scene.requestCombinedModelBuild(true);
+    while (scene.combinedModelBuildPending()) {
+        (void)scene.combinedModelBuildError();
+        std::this_thread::yield();
+    }
+    EXPECT_EQ(scene.combinedModelBuildError(), "");
+    EXPECT_GE(ready.load(), 2);
+    ASSERT_NE(scene.getCombinedModel(), nullptr);
+    EXPECT_EQ(scene.getCombinedModel()->size(), 4);
+
+    fail.store(true);
+    scene.invalidateCache();
+    scene.requestCombinedModelBuild(true);
+    while (scene.combinedModelBuildPending()) {
+        (void)scene.combinedModelBuildError();
+        std::this_thread::yield();
+    }
+    ASSERT_EQ(failures, 2);
+    ASSERT_EQ(scene.getCombinedModel(), nullptr);
+    fail.store(false);
+    scene.setNodeTransform("first", glm::translate(glm::mat4(1.0f), glm::vec3(1, 2, 3)));
+    EXPECT_EQ(scene.combinedModelBuildError(), "");
+    EXPECT_GE(ready.load(), 2);
+    ASSERT_NE(scene.getCombinedModel(), nullptr);
+    EXPECT_EQ(scene.getCombinedModel()->size(), 4);
+    EXPECT_EQ(failures, 2);
+}
+
+TEST(SceneCombinedImport, OrdinaryBuildFailuresKeepAutomaticRetry) {
+    Scene scene;
+    scene.addSplat("first", make_alias_test_model(0.0f));
+    scene.addSplat("second", make_alias_test_model(1.0f));
+    bool fail = true;
+    scene.setCombinedModelAllocator([&](lfs::core::TensorShape shape, size_t, lfs::core::DataType dtype, std::string_view) -> Tensor {
+        if (fail)
+            throw std::runtime_error("allocation failed");
+        return Tensor::empty(std::move(shape), Device::CUDA, dtype);
+    });
+    scene.requestCombinedModelBuild(true);
+    while (scene.combinedModelBuildPending()) {
+        (void)scene.combinedModelBuildError();
+        std::this_thread::yield();
+    }
+    EXPECT_TRUE(scene.combinedModelBuildError().empty());
+    fail = false;
+    ASSERT_NE(scene.getCombinedModel(), nullptr);
+    EXPECT_EQ(scene.getCombinedModel()->size(), 4u);
 }

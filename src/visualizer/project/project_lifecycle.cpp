@@ -630,6 +630,17 @@ namespace lfs::vis::project {
                 ckpt_params,
             const int expected_iteration,
             const std::filesystem::path& dataset_root) {
+            const auto& live_scene = scene_manager.getScene();
+            const auto bound_model = document.scene_graph().training_model_uuid();
+            if (!live_scene.hasTrainingData() || !bound_model ||
+                !bound_model->has_value() ||
+                **bound_model != live_scene.getTrainingModelNodeUuid()) {
+                notifyTrainerRestoreFailure(
+                    viewer,
+                    "The scene no longer holds the project's training cameras and model");
+                return;
+            }
+
             const auto old_root =
                 ckpt_params.dataset.data_path;
             if (!old_root.empty() &&
@@ -1225,8 +1236,13 @@ namespace lfs::vis::project {
                 }
                 report.pending_parameters.dataset.output_path =
                     output_path;
-                tryInstallTrainerFromHydratedProject(
-                    *scene_manager, *document_, report);
+                try {
+                    tryInstallTrainerFromHydratedProject(
+                        *scene_manager, *document_, report);
+                } catch (const std::exception& error) {
+                    // LFS-CENSUS-OK(empty-catch): trainer-restore failure is notified; the hydrated display model is kept.
+                    notifyTrainerRestoreFailure(viewer_, error.what());
+                }
                 const bool installed =
                     viewer_.getTrainerManager() &&
                     viewer_.getTrainerManager()->hasTrainer();
@@ -7643,11 +7659,6 @@ namespace lfs::vis::project {
         const auto shell_staged_at =
             std::chrono::steady_clock::now();
 
-        // Invalidate gallery imports before swapping scenes; their workers drain asynchronously.
-        if (auto* const gui = viewer_.getGuiManager()) {
-            gui->asyncTasks().cancelImport(false);
-        }
-
         stopHydrationThreads(false);
         if (auto* trainer_manager = viewer_.getTrainerManager();
             trainer_manager && trainer_manager->hasTrainer() &&
@@ -7658,6 +7669,11 @@ namespace lfs::vis::project {
                 "Project switching requires the trainer to reach its terminal state",
                 "project.training");
         }
+        // Every project-open entry point reaches this committed switch boundary.
+        if (auto* loader = viewer_.getDataLoader())
+            loader->cancelPendingImports();
+        if (auto* gui = viewer_.getGuiManager())
+            gui->asyncTasks().cancelImport(false);
         viewer_.deactivateProjectTools();
         viewer_.resetProjectState();
         manager->setDatasetPath({});
