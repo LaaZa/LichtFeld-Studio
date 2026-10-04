@@ -115,6 +115,9 @@ namespace lfs::training {
         constexpr float CAMERA_LOSS_EMA_ALPHA = 0.2f;
         constexpr int CAMERA_LOSS_PUBLISH_INTERVAL = 16;
         constexpr int INVISIBLE_ITERATION_LIMIT = 1000;
+        // Datasets with at most this share of non-JPEG images take the JPEG hot path.
+        constexpr float NON_JPEG_THRESHOLD = 0.1f;
+        constexpr size_t JPEG_HOT_DECODER_POOL_SIZE = 2;
 
         [[nodiscard]] std::optional<std::string_view> first_non_finite_parameter(
             const lfs::core::SplatData& model) {
@@ -910,9 +913,7 @@ namespace lfs::training {
                 return config;
             }
 
-            constexpr float NON_JPEG_THRESHOLD = 0.1f;
             constexpr size_t JPEG_HOT_OUTPUT_QUEUE_SIZE = 2;
-            constexpr size_t JPEG_HOT_DECODER_POOL_SIZE = 2;
             const float non_jpeg_ratio = dataset ? dataset->get_non_jpeg_ratio() : 0.0f;
             if (non_jpeg_ratio <= NON_JPEG_THRESHOLD) {
                 if (config.output_queue_size > JPEG_HOT_OUTPUT_QUEUE_SIZE) {
@@ -1259,15 +1260,19 @@ namespace lfs::training {
 
             const bool resume = params_.resume_checkpoint.has_value() || params_.resume_project.has_value();
             if (params_.optimization.ppisp_exposure_from_exif && !resume) {
-                std::vector<std::pair<int, float>> uid_ev;
+                std::vector<int> uids;
+                std::vector<std::filesystem::path> paths;
                 for (const auto& cam : train_dataset_->get_cameras()) {
-                    if (!cam || !ppisp_->is_known_frame(cam->uid())) {
-                        continue;
+                    if (cam && ppisp_->is_known_frame(cam->uid())) {
+                        uids.push_back(cam->uid());
+                        paths.push_back(cam->image_path());
                     }
-                    const auto ev = lfs::core::exif_exposure_ev_for_training_image(
-                        cam->image_path(), params_.dataset.data_path);
-                    if (ev) {
-                        uid_ev.emplace_back(cam->uid(), static_cast<float>(*ev));
+                }
+                const auto evs = lfs::core::exif_exposure_ev_for_training_images(paths, params_.dataset.data_path);
+                std::vector<std::pair<int, float>> uid_ev;
+                for (size_t i = 0; i < evs.size(); ++i) {
+                    if (evs[i]) {
+                        uid_ev.emplace_back(uids[i], static_cast<float>(*evs[i]));
                     }
                 }
                 const int n = static_cast<int>(uid_ev.size());
@@ -3008,6 +3013,18 @@ namespace lfs::training {
             evaluator_ = std::make_unique<lfs::training::MetricsEvaluator>(params_);
             if (lpips_weights_path_)
                 evaluator_->set_lpips_weights_path(*lpips_weights_path_);
+            if (!params_.optimization.eval_mask.empty()) {
+                const glm::vec3 origin = scene_ ? scene_->getTrainingDataOrigin() : glm::vec3{0.0f};
+                auto mesh = lfs::training::load_evaluation_mesh(
+                    lfs::core::utf8_to_path(params_.optimization.eval_mask), {origin.x, origin.y, origin.z},
+                    params_.optimization.eval_mask_invert);
+                if (!mesh)
+                    return std::unexpected(std::format("Failed to load evaluation mesh '{}': {}",
+                                                       params_.optimization.eval_mask, mesh.error().detail()));
+                LOG_INFO("Evaluation mask: {} triangles from {}{}", mesh->indices.shape()[0],
+                         params_.optimization.eval_mask, params_.optimization.eval_mask_invert ? " (inverted)" : "");
+                evaluator_->set_eval_mesh(std::move(*mesh));
+            }
             if (params_.optimization.ppisp_active() && ppisp_ && ppisp_->isFinalized()) {
                 evaluator_->set_appearance([this](const lfs::core::Tensor& rgb, const lfs::core::Camera& cam) {
                     return applyPPISPForEval(rgb, cam);
@@ -3137,6 +3154,15 @@ namespace lfs::training {
         shutdown();
     }
 
+    void Trainer::prewarm_image_decoders() {
+        if (image_decoder_warmup_.valid() || !scene_ ||
+            non_jpeg_ratio(scene_->getActiveCameras()) > NON_JPEG_THRESHOLD)
+            return;
+        image_decoder_warmup_ = std::async(std::launch::async, [] {
+            return std::make_unique<lfs::io::ImageDecoderWarmup>(JPEG_HOT_DECODER_POOL_SIZE);
+        });
+    }
+
     std::shared_ptr<lfs::io::PipelinedImageLoader> Trainer::getActiveImageLoader() const {
         std::lock_guard<std::mutex> lock(active_image_loader_mutex_);
         return active_image_loader_;
@@ -3208,6 +3234,7 @@ namespace lfs::training {
                    entry.mask_threshold == opt_params.mask_threshold &&
                    entry.undistort_prepared == camera.is_undistort_prepared() &&
                    entry.eval_space == static_cast<int>(opt_params.eval_space) &&
+                   entry.bg_color == opt_params.bg_color &&
                    entry.inputs.gt_image.is_valid();
         };
 
@@ -3292,7 +3319,8 @@ namespace lfs::training {
                     .raw_image = std::move(raw_image)};
             },
             cached_inputs.gt_image.is_valid() ? &cached_inputs : nullptr,
-            image_loader.get());
+            image_loader.get(),
+            evaluator_ ? evaluator_->eval_mesh() : nullptr);
         if (!prepared)
             return std::unexpected(std::string(prepared.error().detail()));
 
@@ -3309,6 +3337,7 @@ namespace lfs::training {
                 .mask_threshold = opt_params.mask_threshold,
                 .undistort_prepared = camera.is_undistort_prepared(),
                 .eval_space = static_cast<int>(opt_params.eval_space),
+                .bg_color = opt_params.bg_color,
                 .inputs = prepared->inputs,
                 .last_used = ++camera_metrics_input_cache_clock_});
             while (camera_metrics_input_cache_.size() > 4) {
@@ -5993,6 +6022,15 @@ namespace lfs::training {
                     bg_image = get_random_background_for_camera(cam->image_width(), cam->image_height(), iter);
                 }
 
+                // Per-camera maps cached from the target must not see a per-iteration background.
+                const lfs::core::Tensor source_gt = gt_image;
+                if (composite_target_alpha_ && pipelined_mask_.is_valid() &&
+                    params_.optimization.mask_mode == lfs::core::param::MaskMode::None &&
+                    params_.optimization.use_alpha_as_mask) {
+                    gt_image = kernels::composite_over_background(gt_image, pipelined_mask_,
+                                                                  bg_image.is_valid() ? bg_image : bg);
+                }
+
                 const bool fastgs_path = !params_.optimization.gut;
 
                 if (!loss_accumulator_.is_valid()) {
@@ -6203,7 +6241,7 @@ namespace lfs::training {
                     if (edge_score_scratch.is_valid() &&
                         edge_score_scratch.dtype() == lfs::core::DataType::Float32 &&
                         edge_score_scratch.numel() == static_cast<size_t>(model.size())) {
-                        edge_weight_map = get_edge_weight_map(cam->uid(), gt_image);
+                        edge_weight_map = get_edge_weight_map(cam->uid(), source_gt);
                         edge_weight_scoring_active_ = true;
                     } else if (edge_weight_scoring_active_) {
                         clearEdgeWeightCache();
@@ -6592,7 +6630,8 @@ namespace lfs::training {
                             if (use_mask || roi_weight.is_valid()) {
                                 lfs::core::Tensor mask;
                                 if (use_mask) {
-                                    if (pipelined_mask_.is_valid() && pipelined_mask_.numel() > 0) {
+                                    if (!composite_target_alpha_ && pipelined_mask_.is_valid() &&
+                                        pipelined_mask_.numel() > 0) {
                                         mask = pipelined_mask_;
                                     } else {
                                         mask = cam->load_and_get_mask(
@@ -6829,7 +6868,8 @@ namespace lfs::training {
                             if (use_mask || roi_weight.is_valid()) {
                                 lfs::core::Tensor mask;
                                 if (use_mask) {
-                                    if (pipelined_mask_.is_valid() && pipelined_mask_.numel() > 0) {
+                                    if (!composite_target_alpha_ && pipelined_mask_.is_valid() &&
+                                        pipelined_mask_.numel() > 0) {
                                         mask = pipelined_mask_;
                                     } else {
                                         mask = cam->load_and_get_mask(
@@ -7458,6 +7498,9 @@ namespace lfs::training {
                         tiles_processed++;
                         nvtxRangePop();
 
+                        // The appearance backward only needs its inputs; dropping the corrected image and each
+                        // consumed input keeps one fewer full-resolution image live per stage.
+                        corrected_image = {};
                         lfs::core::Tensor raster_grad = tile_grad;
                         if (exposure_correction) {
                             if (grid_active_this_iter) {
@@ -7465,6 +7508,7 @@ namespace lfs::training {
                                 LFS_VRAM_SCOPE("train.bilateral_grid.backward");
                                 LOG_VRAM_DIFF("train.bilateral_grid.backward");
                                 raster_grad = bilateral_grid_->backward(grid_input, raster_grad, cam->uid());
+                                grid_input = {};
                                 nvtxRangePop();
                             }
                             if (ppisp_on) {
@@ -7485,6 +7529,7 @@ namespace lfs::training {
                                 LOG_VRAM_DIFF("train.ppisp.backward");
                                 raster_grad = ppisp_->backward(
                                     ppisp_input, raster_grad, cam->camera_id(), cam->uid());
+                                ppisp_input = {};
                                 if (ppisp_frozen) {
                                     ppisp_->zero_grad();
                                 }
@@ -7500,8 +7545,12 @@ namespace lfs::training {
                             }
                         }
 
+                        // Summed eagerly in place: the deferred sum materialized inside the rasterizer backward
+                        // with snapshot copies of both operands, three full-resolution images at the step peak.
                         if (tile_grad_raw.is_valid() && tile_grad_raw.numel() > 0) {
-                            raster_grad = raster_grad + tile_grad_raw;
+                            if (raster_grad.data_ptr() == tile_grad.data_ptr())
+                                raster_grad = raster_grad.clone();
+                            raster_grad.add_(tile_grad_raw);
                         }
 
                         current_phase = StepPhase::Backward;
@@ -8361,7 +8410,6 @@ namespace lfs::training {
             pipelined_config.use_16bit_color = params_.dataset.loading_params.use_16bit_color;
 
             // Non-JPEG images (PNG, WebP) need CPU decoding - use more threads until cache warms
-            constexpr float NON_JPEG_THRESHOLD = 0.1f;
             constexpr size_t MIN_COLD_THREADS = 4;
             constexpr size_t COLD_PREFETCH_COUNT = 16;
             const float non_jpeg_ratio = train_dataset_->get_non_jpeg_ratio();
@@ -8527,6 +8575,16 @@ namespace lfs::training {
                              aux_pipeline_config.invert_masks, aux_pipeline_config.mask_threshold);
                 }
             }
+            // Without a mask mode the alpha channel is the image's transparency: the target shows the training
+            // background where the image is transparent, exactly like the render does.
+            composite_target_alpha_ = params_.optimization.mask_mode == lfs::core::param::MaskMode::None &&
+                                      params_.optimization.use_alpha_as_mask && alpha_available;
+            if (composite_target_alpha_) {
+                aux_pipeline_config.use_alpha_as_mask = true;
+                aux_pipeline_config.invert_masks = false;
+                aux_pipeline_config.mask_threshold = 0.0f;
+                LOG_INFO("Images carry alpha: targets are composited over the training background");
+            }
 
             if (aux_pipeline_config.load_depths || aux_pipeline_config.load_normals) {
                 constexpr size_t SIDECAR_COLD_THREAD_LIMIT = 8;
@@ -8551,6 +8609,9 @@ namespace lfs::training {
 
             pipelined_config = tunePipelinedLoaderConfig(
                 pipelined_config, train_dataset_, aux_pipeline_config);
+            // Decoders warmed for another pool size would only hold VRAM beside the loader's own.
+            if (pipelined_config.decoder_pool_size != JPEG_HOT_DECODER_POOL_SIZE)
+                image_decoder_warmup_ = {};
 
             // Keep the camera stream stable across checkpoint resume.  The
             // loader is intentionally rebuilt after the checkpoint is loaded;
@@ -8566,6 +8627,7 @@ namespace lfs::training {
             auto active_image_loader_guard = makeScopeGuard([this]() {
                 clearActiveImageLoader();
             });
+            image_decoder_warmup_ = {};
             updateGTLoadConfigSnapshot();
             setActiveImageLoader(train_dataloader->get_loader_shared());
             strategy_->set_image_loader(train_dataloader->get_loader());

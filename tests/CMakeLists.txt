@@ -3,6 +3,10 @@
 
 # Testing module - comprehensive tests for all components
 
+if(BUILD_TESTS OR BUILD_FORMAT_TESTS)
+    add_subdirectory(image_codecs)
+endif()
+
 # =============================================================================
 # Headless localization contracts (no LibTorch/CUDA)
 # =============================================================================
@@ -222,6 +226,7 @@ set(LICHT_FORMAT_NON_WINDOWS_FILES
     ${CMAKE_SOURCE_DIR}/src/io/project/project_document.cpp
     ${CMAKE_SOURCE_DIR}/src/io/project/selection_chapter.cpp
     ${CMAKE_SOURCE_DIR}/src/io/project/session_chapters.cpp
+    ${CMAKE_SOURCE_DIR}/src/io/project/sfm_observation_chapter.cpp
     ${CMAKE_SOURCE_DIR}/src/io/project/splat_chapter.cpp
     ${CMAKE_SOURCE_DIR}/src/visualizer/gui/layout_state.cpp
 )
@@ -309,8 +314,15 @@ set_tests_properties(lichtfeld_format_tests PROPERTIES
     TIMEOUT 300
 )
 
-add_executable(lichtfeld_frame_tests test_frame_demand_ledger.cpp)
+add_executable(lichtfeld_frame_tests
+    test_frame_demand_ledger.cpp
+    test_framerate_controller.cpp
+    ${CMAKE_SOURCE_DIR}/src/visualizer/rendering/framerate_controller.cpp)
+
+target_compile_definitions(lichtfeld_frame_tests PRIVATE LFS_STATIC_BUILD)
+
 target_include_directories(lichtfeld_frame_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/core/include
     ${CMAKE_SOURCE_DIR}/src/visualizer/rendering
     ${CMAKE_SOURCE_DIR}/src/visualizer
     ${CMAKE_SOURCE_DIR}/src
@@ -481,6 +493,7 @@ set(TEST_FILES
     test_mask_loss.cpp
     test_mask_preprocess_fusion.cpp
     test_roi_weight_map.cpp
+    test_mesh_mask_kernels.cpp
     test_roi_weighted_losses.cpp
     test_checkpoint_resume.cpp
     test_component_config_serialization.cpp
@@ -505,6 +518,8 @@ set(TEST_FILES
     test_gpu_teardown_order.cpp
     test_logger.cpp
     test_exif.cpp
+    test_nanoflann_build.cpp
+    test_initial_scales.cpp
     test_system_info.cpp
     test_parameter_manager.cpp
     test_mcp_protocol.cpp

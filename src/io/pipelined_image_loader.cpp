@@ -339,7 +339,8 @@ namespace lfs::io {
             return instances;
         }
 
-        std::shared_ptr<NvCodecImageLoader> acquire_nvcodec_loader(size_t decoder_pool_size) {
+        std::shared_ptr<NvCodecImageLoader> acquire_nvcodec_loader(size_t decoder_pool_size,
+                                                                   const bool create_eagerly = false) {
             std::lock_guard<std::mutex> lock(get_nvcodec_mutex());
             auto& instances = get_nvcodec_loader_cache();
             const size_t requested_pool_size = normalize_nvcodec_pool_size(decoder_pool_size);
@@ -349,11 +350,12 @@ namespace lfs::io {
                 return it->second.instance;
             }
 
-            auto instance = [&requested_pool_size] {
+            auto instance = [&requested_pool_size, create_eagerly] {
                 NvCodecImageLoader::Options opts;
                 opts.device_id = 0;
                 opts.decoder_pool_size = requested_pool_size;
                 opts.enable_fallback = true;
+                opts.create_eagerly = create_eagerly;
                 return std::make_shared<NvCodecImageLoader>(opts);
             }();
 
@@ -724,6 +726,24 @@ namespace lfs::io {
 
     PipelinedImageLoader::~PipelinedImageLoader() {
         shutdown();
+    }
+
+    ImageDecoderWarmup::ImageDecoderWarmup(const size_t decoder_pool_size)
+        : decoder_pool_size_(decoder_pool_size) {
+        if (!is_nvcodec_available())
+            return;
+        retain_nvcodec_loader_cache(decoder_pool_size_);
+        retained_ = true;
+        try {
+            acquire_nvcodec_loader(decoder_pool_size_, true);
+        } catch (const std::exception& error) {
+            LOG_WARN("[PipelinedImageLoader] Image decoder warm-up failed: {}", error.what());
+        }
+    }
+
+    ImageDecoderWarmup::~ImageDecoderWarmup() {
+        if (retained_)
+            release_nvcodec_loader_cache(decoder_pool_size_);
     }
 
     void PipelinedImageLoader::shutdown() {
@@ -1194,6 +1214,7 @@ namespace lfs::io {
                 lfs::core::Device::CPU, lfs::core::DataType::UInt8);
             auto gpu_uint8 = cpu_tensor.to(lfs::core::Device::CUDA);
             gpu_uint8.set_name("io.image.gpu_staging");
+            const cudaStream_t stream = gpu_uint8.stream();
             if (used_stbi)
                 stbi_image_free(img_data);
             else
@@ -1207,7 +1228,7 @@ namespace lfs::io {
                 cuda::launch_uint8_hwc_to_uint8_chw(
                     reinterpret_cast<const uint8_t*>(gpu_uint8.data_ptr()),
                     reinterpret_cast<uint8_t*>(decoded.data_ptr()),
-                    H, W, C, nullptr);
+                    H, W, C, stream);
             } else {
                 decoded = lfs::core::Tensor::empty(
                     lfs::core::TensorShape({C, H, W}),
@@ -1216,13 +1237,14 @@ namespace lfs::io {
                 cuda::launch_uint8_hwc_to_float32_chw(
                     reinterpret_cast<const uint8_t*>(gpu_uint8.data_ptr()),
                     reinterpret_cast<float*>(decoded.data_ptr()),
-                    H, W, C, nullptr);
+                    H, W, C, stream);
             }
+            assert(decoded.stream() == stream);
 
             if (is_nvcodec_available()) {
                 try {
                     auto nvcodec = acquire_nvcodec_loader(config_.decoder_pool_size);
-                    auto jpeg_bytes = nvcodec->encode_to_jpeg(decoded, config_.cache_jpeg_quality, nullptr);
+                    auto jpeg_bytes = nvcodec->encode_to_jpeg(decoded, config_.cache_jpeg_quality, stream);
                     auto jpeg_shared = std::make_shared<std::vector<uint8_t>>(std::move(jpeg_bytes));
                     put_in_jpeg_cache(cache_key, jpeg_shared);
 
@@ -2662,15 +2684,13 @@ namespace lfs::io {
                             const auto& bytes = *batch[i].jpeg_data;
                             const bool is_jpeg2k = bytes.size() >= 2 && bytes[0] == 0xff && bytes[1] == 0x4f;
                             if (is_jpeg2k) {
+                                // UINT8 streams decode to raw bytes; UINT16 streams (16-bit alpha)
+                                // decode to normalized Float32.
                                 auto raw = nvcodec->decode_jpeg2k_16bit_from_memory_gpu(
                                     bytes, decode_stream_, false, true);
-                                // Pipeline mask sidecars are always encoded as UINT8 below.
-                                // The decoder returns normalized Float32 for UINT16 streams;
-                                // reinterpreting that output as raw u16 would normalize twice.
-                                LFS_ASSERT_MSG(
-                                    raw.dtype() == lfs::core::DataType::UInt8,
-                                    "pipeline JPEG2000 mask cache must contain eight-bit samples");
-                                mask_tensor = raw.to(lfs::core::DataType::Float32) / 255.0f;
+                                mask_tensor = raw.dtype() == lfs::core::DataType::UInt8
+                                                  ? raw.to(lfs::core::DataType::Float32) / 255.0f
+                                                  : raw;
                             } else {
                                 mask_tensor = nvcodec->load_image_from_memory_gpu(
                                     bytes, 1, 0, decode_stream_, DecodeFormat::Grayscale);
@@ -2834,7 +2854,9 @@ namespace lfs::io {
                     const auto rgba = load_rgba_image_cpu_decoded(
                         item.path,
                         item.undistort ? 1 : item.params.resize_factor,
-                        item.undistort ? 0 : item.params.max_width);
+                        item.undistort ? 0 : item.params.max_width,
+                        nullptr,
+                        config_.use_16bit_color);
                     const size_t H = rgba.shape()[1];
                     const size_t W = rgba.shape()[2];
                     auto rgb = rgba.slice(0, 0, 3).contiguous();
@@ -2859,12 +2881,26 @@ namespace lfs::io {
                         alpha = lfs::core::undistort_mask_area(alpha, scaled, nullptr);
                     }
 
+                    // Later epochs read alpha back from its 16-bit cache: put the first load on the same grid.
+                    {
+                        const size_t alpha_h = alpha.shape()[0];
+                        const size_t alpha_w = alpha.shape()[1];
+                        auto alpha_u16 = lfs::core::Tensor::empty(
+                            alpha.shape(), lfs::core::Device::CUDA, lfs::core::DataType::Float16);
+                        cuda::launch_float32_hwc_to_uint16_hwc(
+                            alpha.ptr<float>(), reinterpret_cast<uint16_t*>(alpha_u16.data_ptr()),
+                            alpha_h, alpha_w, 1, nullptr);
+                        cuda::launch_uint16_hwc_to_float32_hwc(
+                            reinterpret_cast<const uint16_t*>(alpha_u16.data_ptr()), alpha.ptr<float>(),
+                            alpha_h, alpha_w, 1, nullptr);
+                    }
+
                     if (is_nvcodec_available()) {
                         try {
                             write_derived_cache(*nvcodec, rgb, item.cache_key, nullptr, item.params);
 
                             const auto alpha_key = make_mask_cache_key(item.path, item.params);
-                            auto alpha_jpeg = nvcodec->encode_grayscale_to_jpeg2k(alpha, nullptr, true, true);
+                            auto alpha_jpeg = nvcodec->encode_grayscale_to_jpeg2k(alpha, nullptr, true, false);
                             put_in_jpeg_cache(alpha_key,
                                               std::make_shared<std::vector<uint8_t>>(std::move(alpha_jpeg)));
                         } catch (...) {

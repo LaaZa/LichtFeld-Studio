@@ -4,6 +4,8 @@
 #include "core/cuda/lanczos_resize/lanczos_resize.hpp"
 #include "core/cuda/undistort/undistort.hpp"
 #include "core/image_io.hpp"
+#include "core/tensor/internal/cuda_stream_context.hpp"
+#include "core/tensor/internal/memory_pool.hpp"
 #include "core/tensor/internal/tensor_serialization.hpp"
 #include "io/nvcodec_image_loader.hpp"
 #include "io/pipelined_image_loader.hpp"
@@ -13,6 +15,8 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -22,8 +26,11 @@
 #include <iostream>
 #include <iterator>
 #include <map>
+#include <optional>
 #include <sstream>
+#include <thread>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -153,6 +160,36 @@ TEST_F(PipelinedImageLoaderTest, LoadsRealImageAndMaskWithExpectedContract) {
               TensorShape({ready.tensor.shape()[1], ready.tensor.shape()[2]}));
     EXPECT_GE(ready.mask->min().item<float>(), 0.0f);
     EXPECT_LE(ready.mask->max().item<float>(), 1.0f);
+}
+
+// Fails if the warm-up builds no decoders, if a loader builds its own instead of sharing them, if either
+// owner frees them while the other still holds them, or if they outlive both.
+TEST_F(PipelinedImageLoaderTest, DecoderWarmupSharesDecodersInEitherLifetimeOrder) {
+    const size_t base = NvCodecImageLoader::live_count();
+    const auto decode = [this](PipelinedImageLoader& loader, const size_t sequence_id) {
+        loader.prefetch({request(sequence_id, 0, false)});
+        EXPECT_TRUE(loader.get().tensor.is_valid());
+    };
+    {
+        auto warmup = std::make_unique<ImageDecoderWarmup>(config().decoder_pool_size);
+        EXPECT_EQ(NvCodecImageLoader::live_count(), base + 1);
+        PipelinedImageLoader loader(config());
+        decode(loader, 0);
+        EXPECT_EQ(NvCodecImageLoader::live_count(), base + 1);
+        warmup.reset();
+        EXPECT_EQ(NvCodecImageLoader::live_count(), base + 1);
+        decode(loader, 1);
+    }
+    EXPECT_EQ(NvCodecImageLoader::live_count(), base);
+    {
+        ImageDecoderWarmup warmup(config().decoder_pool_size);
+        for (size_t run = 0; run < 2; ++run) {
+            PipelinedImageLoader loader(config());
+            decode(loader, 2 + run);
+        }
+        EXPECT_EQ(NvCodecImageLoader::live_count(), base + 1);
+    }
+    EXPECT_EQ(NvCodecImageLoader::live_count(), base);
 }
 
 TEST_F(PipelinedImageLoaderTest, OriginalJpegUsesDirectDecodeWithoutColdReencoding) {
@@ -395,6 +432,90 @@ TEST_F(PipelinedImageLoaderTest, AlphaAsMaskRgbUsesGpuLanczos) {
         Tensor::from_blob(rgba.data(), TensorShape({HEIGHT, WIDTH, 4}), Device::CPU, DataType::UInt8).to(Device::CUDA),
         HEIGHT / 2, WIDTH / 2, 2, nullptr);
     EXPECT_EQ(expected.slice(0, 0, 3).contiguous().cpu().to_vector(), ready->tensor.cpu().to_vector());
+}
+
+namespace {
+    // Loads one alpha-as-mask request twice; the second load is served from the derived caches.
+    std::array<std::pair<std::vector<float>, std::vector<float>>, 2> load_rgba_twice(
+        PipelinedImageLoader& loader, const std::filesystem::path& path, const LoadParams& params) {
+        std::array<std::pair<std::vector<float>, std::vector<float>>, 2> loads;
+        for (size_t pass = 0; pass < loads.size(); ++pass) {
+            ImageRequest request{};
+            request.sequence_id = pass;
+            request.path = path;
+            request.params = params;
+            request.extract_alpha_as_mask = true;
+            loader.prefetch({request});
+            const auto ready = loader.try_get_for(std::chrono::seconds(20));
+            EXPECT_TRUE(ready.has_value());
+            if (!ready)
+                return loads;
+            EXPECT_TRUE(ready->error.empty()) << ready->error;
+            EXPECT_TRUE(ready->mask.has_value());
+            if (!ready->mask)
+                return loads;
+            loads[pass] = {ready->tensor.to(DataType::Float32).cpu().to_vector(), ready->mask->cpu().to_vector()};
+        }
+        EXPECT_EQ(loader.get_stats().hot_path_hits, 1U);
+        return loads;
+    }
+} // namespace
+
+// Catches the alpha-as-mask path decoding 16-bit RGBA through an 8-bit buffer, or caching its alpha at 8 bits
+// so that later epochs see a different alpha than the first.
+TEST_F(PipelinedImageLoaderTest, AlphaAsMaskKeepsSixteenBitColorAndAlpha) {
+    constexpr int WIDTH = 19;
+    constexpr int HEIGHT = 13;
+    const lfs::test::licht::TemporaryDirectory temp("lfs-u16-rgba");
+    const auto image_path = temp.path / "image.png";
+    std::vector<uint16_t> rgba(static_cast<size_t>(WIDTH) * HEIGHT * 4);
+    for (size_t index = 0; index < rgba.size(); ++index)
+        rgba[index] = static_cast<uint16_t>((index * 3253 + index / 5) % 65536);
+    ASSERT_TRUE(save_png(image_path, rgba.data(), WIDTH, HEIGHT, 4, 16, 1));
+
+    auto settings = config();
+    settings.use_16bit_color = true;
+    PipelinedImageLoader loader(settings);
+    LoadParams params;
+    params.resize_factor = 1;
+    params.output_uint8 = false;
+    const auto loads = load_rgba_twice(loader, image_path, params);
+    constexpr size_t PIXELS = static_cast<size_t>(WIDTH) * HEIGHT;
+    for (size_t pass = 0; pass < loads.size(); ++pass) {
+        const auto& [rgb, alpha] = loads[pass];
+        ASSERT_EQ(rgb.size(), 3 * PIXELS) << "pass " << pass;
+        ASSERT_EQ(alpha.size(), PIXELS) << "pass " << pass;
+        for (size_t pixel = 0; pixel < PIXELS; ++pixel) {
+            for (size_t c = 0; c < 3; ++c)
+                EXPECT_NEAR(rgb[c * PIXELS + pixel], rgba[pixel * 4 + c] / 65535.0f, 1e-6f)
+                    << "pass " << pass << " c=" << c << " pixel=" << pixel;
+            EXPECT_NEAR(alpha[pixel], rgba[pixel * 4 + 3] / 65535.0f, 1e-6f) << "pass " << pass << " pixel=" << pixel;
+        }
+    }
+}
+
+// Catches an alpha that differs between the first load and later cache hits (an 8-bit cache, or a first load off
+// the cache's 16-bit grid), which can flip a thresholded mask between epochs.
+TEST_F(PipelinedImageLoaderTest, AlphaAsMaskCacheKeepsResizedAlpha) {
+    constexpr int WIDTH = 64;
+    constexpr int HEIGHT = 48;
+    const lfs::test::licht::TemporaryDirectory temp("lfs-u8-rgba-cache");
+    const auto image_path = temp.path / "image.png";
+    std::vector<uint8_t> rgba(static_cast<size_t>(WIDTH) * HEIGHT * 4);
+    for (size_t index = 0; index < rgba.size(); ++index)
+        rgba[index] = static_cast<uint8_t>((index * 73 + index / 11) % 256);
+    ASSERT_TRUE(save_png(image_path, rgba.data(), WIDTH, HEIGHT, 4, 8, 1));
+
+    PipelinedImageLoader loader(config());
+    LoadParams params;
+    params.resize_factor = 2;
+    const auto loads = load_rgba_twice(loader, image_path, params);
+    const auto& first = loads[0].second;
+    const auto& cached = loads[1].second;
+    ASSERT_EQ(first.size(), static_cast<size_t>(WIDTH / 2) * (HEIGHT / 2));
+    ASSERT_EQ(cached.size(), first.size());
+    for (size_t pixel = 0; pixel < first.size(); ++pixel)
+        EXPECT_EQ(cached[pixel], first[pixel]) << "pixel=" << pixel;
 }
 
 TEST_F(PipelinedImageLoaderTest, ImmediateCacheHitDoesNotRepeatResize) {
@@ -698,4 +819,77 @@ TEST(SidecarResumeSampler, DeterministicCameraStreamContinuesAtCheckpointOffset)
         ASSERT_TRUE(actual.has_value());
         EXPECT_EQ(*actual, *expected) << "camera stream diverged at post-resume sample " << i;
     }
+}
+
+// Fails when the immediate CPU decode converts or caches the image on the legacy default stream:
+// the caller's non-blocking stream then reads the image before it is written, or the call waits
+// behind unrelated legacy-stream work (held here by a host callback until the watchdog fires).
+TEST_F(PipelinedImageLoaderTest, ImmediateCpuDecodeStaysOnTheCallerStream) {
+    constexpr int HEIGHT = 48, WIDTH = 64;
+    constexpr size_t PIXELS = static_cast<size_t>(WIDTH) * HEIGHT;
+    std::vector<uint8_t> pixels(PIXELS * 3);
+    std::vector<float> expected(pixels.size());
+    for (size_t i = 0; i < pixels.size(); ++i) {
+        pixels[i] = static_cast<uint8_t>((i * 7 + i / 192) % 256);
+        expected[(i % 3) * PIXELS + i / 3] = pixels[i] * (1.0f / 255.0f);
+    }
+    const lfs::test::licht::TemporaryDirectory temp("lfs-immediate-stream");
+    // The warm-up file primes the decoder, encoder and allocations so the gated call allocates nothing new; its
+    // pixels differ so a reused buffer cannot pass for the checked image.
+    const auto warm = temp.path / "warm.png";
+    const auto png = temp.path / "image.png";
+    std::vector<uint8_t> warm_pixels(pixels.size());
+    std::ranges::transform(pixels, warm_pixels.begin(), [](const uint8_t value) { return static_cast<uint8_t>(~value); });
+    ASSERT_TRUE(save_png(warm, warm_pixels.data(), WIDTH, HEIGHT, 3, 8, 1));
+    ASSERT_TRUE(save_png(png, pixels.data(), WIDTH, HEIGHT, 3, 8, 1));
+
+    cudaStream_t caller = nullptr;
+    ASSERT_EQ(cudaStreamCreateWithFlags(&caller, cudaStreamNonBlocking), cudaSuccess);
+    std::optional<PipelinedImageLoader> loader;
+    {
+        const CUDAStreamGuard guard(caller);
+        loader.emplace(config());
+        ASSERT_TRUE(loader->load_image_immediate(warm, LoadParams{}).cpu().is_valid());
+    }
+    std::atomic<bool> released{false};
+    ASSERT_EQ(cudaLaunchHostFunc(
+                  cudaStreamLegacy,
+                  [](void* flag) {
+                      while (!static_cast<std::atomic<bool>*>(flag)->load())
+                          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                  },
+                  &released),
+              cudaSuccess);
+    std::thread watchdog([&released] {
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+        released = true;
+    });
+
+    std::vector<float> loaded;
+    std::chrono::steady_clock::duration elapsed{};
+    {
+        const CUDAStreamGuard guard(caller);
+        const auto start = std::chrono::steady_clock::now();
+        const auto image = loader->load_image_immediate(png, LoadParams{});
+        elapsed = std::chrono::steady_clock::now() - start;
+        // Read back on the caller stream alone while the legacy stream is still held.
+        EXPECT_EQ(image.dtype(), DataType::Float32);
+        if (image.dtype() == DataType::Float32) {
+            loaded.resize(image.numel());
+            EXPECT_EQ(cudaMemcpyAsync(loaded.data(), image.ptr<float>(), loaded.size() * sizeof(float),
+                                      cudaMemcpyDeviceToHost, caller),
+                      cudaSuccess);
+            EXPECT_EQ(cudaStreamSynchronize(caller), cudaSuccess);
+        }
+        EXPECT_FALSE(released.load()) << "the readback finished after the watchdog released the legacy stream";
+    }
+    released = true;
+    watchdog.join();
+    ASSERT_EQ(cudaStreamSynchronize(cudaStreamLegacy), cudaSuccess);
+    loader.reset();
+    lfs::core::CudaMemoryPool::instance().release_stream(caller);
+    ASSERT_EQ(cudaStreamDestroy(caller), cudaSuccess);
+
+    EXPECT_LT(elapsed, std::chrono::seconds(2));
+    EXPECT_EQ(loaded, expected);
 }
