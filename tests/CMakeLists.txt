@@ -471,6 +471,7 @@ set(TEST_FILES
     test_tensor_uint8_masking.cpp
     test_tensor_serialization.cpp
     test_tensor_cat_reduction_bug.cpp
+    test_percentile_bounds.cpp
     test_tensor_inplace_capacity.cpp
     test_sog_format.cpp
     test_ssog_format.cpp
@@ -522,6 +523,7 @@ set(TEST_FILES
     test_initial_scales.cpp
     test_system_info.cpp
     test_parameter_manager.cpp
+    test_training_manager_events.cpp
     test_mcp_protocol.cpp
     test_mcp_training_state.cpp
     test_mcp_app_utils.cpp
@@ -634,6 +636,7 @@ set(TEST_FILES
     test_bilateral_grid_projection.cpp
     test_bilateral_grid_exposure_chroma.cpp
     test_bilateral_grid_backward_tiled.cpp
+    test_appearance_in_place.cpp
     test_ppisp_projection.cpp
     test_ppisp_cuda_vs_torch.cpp
     test_ppisp_banded_region.cpp

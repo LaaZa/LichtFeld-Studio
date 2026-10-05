@@ -63,6 +63,7 @@ namespace lfs::vis {
     class VisualizerImplResetTest_SaveWhileTrainerWriterInFlightQueuesUntilCompletion_Test;
     class VisualizerImplResetTest_TemporaryPauseRequestIsObservedAtNextSafePoint_Test;
     class VisualizerImplResetTest_SaveAsWhilePausedTrainingRoutesThroughLiveTrainer_Test;
+    class VisualizerImplResetTest_AsyncPausedExplicitPreparationAdoptsItsSnapshot_Test;
     class VisualizerImplResetTest_SaveAsRoutesThroughFailedTerminalSnapshotAftermath_Test;
     class VisualizerImplResetTest_InfoSurvivesFailedTerminalSnapshotAftermath_Test;
     class VisualizerImplResetTest_AdoptCompletedTrainingSnapshotSkipsOpenWhenCountersEqual_Test;
@@ -453,6 +454,7 @@ namespace lfs::training {
         friend class lfs::vis::VisualizerImplResetTest_SaveWhileTrainerWriterInFlightQueuesUntilCompletion_Test;
         friend class lfs::vis::VisualizerImplResetTest_TemporaryPauseRequestIsObservedAtNextSafePoint_Test;
         friend class lfs::vis::VisualizerImplResetTest_SaveAsWhilePausedTrainingRoutesThroughLiveTrainer_Test;
+        friend class lfs::vis::VisualizerImplResetTest_AsyncPausedExplicitPreparationAdoptsItsSnapshot_Test;
         friend class lfs::vis::VisualizerImplResetTest_SaveAsRoutesThroughFailedTerminalSnapshotAftermath_Test;
         friend class lfs::vis::VisualizerImplResetTest_InfoSurvivesFailedTerminalSnapshotAftermath_Test;
         friend class lfs::vis::VisualizerImplResetTest_AdoptCompletedTrainingSnapshotSkipsOpenWhenCountersEqual_Test;
@@ -557,7 +559,7 @@ namespace lfs::training {
         struct PhotometricLossResult {
             lfs::core::Tensor loss;
             lfs::core::Tensor grad_corrected;
-            lfs::core::Tensor grad_raw;
+            std::optional<lfs::training::kernels::DecoupledRawGradient> raw_gradient;
         };
 
         // Compute photometric loss AND gradient manually (no autograd)
@@ -571,7 +573,7 @@ namespace lfs::training {
         struct MaskLossResult {
             lfs::core::Tensor loss;
             lfs::core::Tensor grad_corrected;
-            lfs::core::Tensor grad_raw;
+            std::optional<lfs::training::kernels::DecoupledRawGradient> raw_gradient;
             lfs::core::Tensor grad_alpha;
             lfs::core::Tensor normal_pixel_weight;
         };
@@ -655,6 +657,7 @@ namespace lfs::training {
 
         // Handle control requests
         void handle_control_requests(int iter, std::stop_token stop_token = {});
+        void reserve_project_hook_chapters();
         void prepare_project_snapshot_at_safe_point(
             int capture_iteration,
             const std::filesystem::path& path,

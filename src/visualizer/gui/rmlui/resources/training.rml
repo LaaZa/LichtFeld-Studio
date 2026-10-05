@@ -18,10 +18,20 @@
       <button class="btn btn--secondary btn--full" data-tooltip="training.tooltip.btn_reset" data-if="show_reset_ready" data-event-click="action('reset')">{{label_reset}}</button>
       <button class="btn btn--error btn--full" data-tooltip="training.tooltip.btn_clear" data-event-click="action('clear')">{{label_clear}}</button>
     </div>
+    <div data-if="show_ctrl_preparing">
+      <div class="training-preparation-status">
+        <div class="training-preparation-indicator" data-class-is-active="show_ctrl_preparing" />
+        <span class="training-preparation-label">{{label_status_starting}}</span>
+      </div>
+      <button class="btn btn--secondary btn--full" data-event-click="action('stop')">{{label_cancel_preparation}}</button>
+    </div>
     <div data-if="show_ctrl_starting">
-      <span class="status-text status-muted">{{label_status_starting}}</span>
+      <div class="training-preparation-status">
+        <div class="training-preparation-indicator" data-class-is-active="show_ctrl_starting" />
+        <span class="training-preparation-label">{{label_status_starting}}</span>
+      </div>
       <button class="btn btn--warning btn--full" data-tooltip="training.tooltip.btn_pause" data-event-click="action('pause')">{{label_pause}}</button>
-      <button class="btn btn--error btn--full" data-tooltip="training.tooltip.btn_stop" data-event-click="action('stop')">{{label_stop}}</button>
+      <button class="btn btn--secondary btn--full" data-event-click="action('stop')">{{label_cancel_preparation}}</button>
     </div>
     <div data-if="show_ctrl_running">
       <button class="btn btn--warning btn--full" data-tooltip="training.tooltip.btn_pause" data-event-click="action('pause')">{{label_pause}}</button>
@@ -145,13 +155,6 @@
                 data-event-click="toggle_step_scaling_lock">
           <img data-attr-src="steps_scaling_lock_icon" />
         </button>
-      </div>
-      <div class="setting-row" data-for="row : pv_basic_background_rows"
-           data-if="dep_mrnf"
-           data-attr-data-tooltip="row.tooltip_key">
-        <span class="prop-label">{{row.label}}</span>
-        <input type="checkbox" data-if="row.kind == 'checkbox'" data-checked="row.checked"
-               data-event-change="pv_value_change(row.id, row.checked)" />
       </div>
       <div class="setting-row" data-tooltip="training.tooltip.sh_degree" data-if="!pv_search_active">
         <span class="prop-label">{{label_sh_degree}}</span>
