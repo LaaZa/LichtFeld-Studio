@@ -5,7 +5,7 @@
 </head>
 
 <body template="docked-panel" data-model="asset_manager">
-  <div id="asset-text-measure"><span id="asset-measure-prose">M</span><span id="asset-measure-mono">M</span></div>
+  <div id="asset-text-measure"><span id="asset-measure-prose">M</span><span id="asset-measure-value">M</span></div>
   <div id="asset-floating-header" class="hidden" data-class-hidden="!is_floating">
     <span id="asset-floating-title">{{panel_label}}</span>
     <div class="asset-panel-actions">
@@ -64,6 +64,11 @@
           <button class="asset-button asset-button--text asset-update-all" data-if="gallery_update_all_visible"
                   data-event-click="gallery_update_all" data-attr-title="gallery_update_all_label">
             <span class="asset-button-text">{{gallery_update_all_label}}</span>
+          </button>
+          <button class="asset-button asset-button--icon asset-clean-missing" data-if="can_clean_missing"
+                  data-event-click="clean_missing" data-tooltip="projects.tooltip.clean_missing"
+                  aria-label="{{clean_missing_label}}">
+            <img src="../icon/broom.png"/>
           </button>
           <button class="asset-button asset-button--icon asset-toolbar-view" data-event-click="open_view_menu"
                   data-tooltip="common.more" aria-label="{{view_menu_label}}">

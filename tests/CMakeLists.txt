@@ -316,6 +316,7 @@ set_tests_properties(lichtfeld_format_tests PROPERTIES
 
 add_executable(lichtfeld_frame_tests
     test_frame_demand_ledger.cpp
+    test_frustum_depth_coverage.cpp
     test_framerate_controller.cpp
     ${CMAKE_SOURCE_DIR}/src/visualizer/rendering/framerate_controller.cpp)
 
@@ -413,6 +414,7 @@ set(TEST_FILES
     test_fused_noise_injection.cpp
     test_densification_info_zero.cpp
     test_densify_events_4x.cpp
+    test_median_selection_perf.cu
     test_training_state_ledger.cpp
     test_vram_ledger_model.cpp
     test_vram_owner_timeline.cpp
@@ -666,6 +668,8 @@ set(TEST_FILES
     test_rml_im_mode_layout.cpp
     test_rml_python_listener_lifetime.cpp
     test_status_bar_fit.cpp
+    test_gallery_file_panel_layout.cpp
+    test_rmlui_preview_decode.cpp
     test_training_progress_publisher.cpp
     test_startup_overlay_geometry.cpp
     test_vram_hud_geometry.cpp
@@ -1142,6 +1146,13 @@ set(LFS_PYTHON_FAST_TESTS
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_store.py
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_store_subscriptions.py
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_arg_extrema_nan.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_empty_slices.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_sign_nan.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_inverse_trig_domain.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_global_keepdim.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_row_mask_assignment.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_repeat_regression.py
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_property.py
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tool_registry_activation.py
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_training_manager_regressions.py
@@ -1244,6 +1255,13 @@ add_test(NAME lichtfeld.python.gpu
     COMMAND ${Python_EXECUTABLE} -m pytest -q
         -m gpu
         ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_arg_extrema_nan.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_empty_slices.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_sign_nan.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_inverse_trig_domain.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_global_keepdim.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_row_mask_assignment.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_repeat_regression.py
         ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_property.py
 )
 set_tests_properties(lichtfeld.python.gpu PROPERTIES

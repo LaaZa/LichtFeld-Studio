@@ -5361,6 +5361,82 @@ contract["test_selection_submode_follows_native_mode"](lf)
         EXPECT_EQ(viewer.getScene().getNode("gallery-group"), nullptr);
     }
 
+    // Catches the startup dataset import dropping --add-splat, which trained the viewer's model
+    // without the added splats while headless training kept them.
+    TEST_F(VisualizerImplResetTest, DatasetImportKeepsAddedSplatSettings) {
+        VisualizerImpl viewer(projectOptions());
+        auto& tasks = viewer.getGuiManager()->asyncTasks();
+        const auto splat = makeSplatFixture("added-splat");
+        const auto dataset = temporary_.path / "added-splat-dataset";
+        write_minimal_transforms_dataset(dataset);
+        core::events::cmd::LoadFile{
+            .path = dataset,
+            .is_dataset = true,
+            .add_splat_paths = {splat},
+            .add_splat_freeze = {true},
+            .freeze_lr_scale = 0.05f,
+            .exclude_frozen_add_splats_from_export = true,
+            .discard_changes = true}
+            .emit();
+        ASSERT_TRUE(waitUntil([&] { tasks.pollImportCompletion(); return !tasks.isImporting(); }));
+
+        const auto& params = viewer.getDataLoader()->getParameters();
+        EXPECT_EQ(params.add_splat_paths, std::vector<std::filesystem::path>{splat});
+        EXPECT_EQ(params.add_splat_freeze, std::vector<bool>{true});
+        EXPECT_FLOAT_EQ(params.freeze_lr_scale, 0.05f);
+        EXPECT_TRUE(params.exclude_frozen_add_splats_from_export);
+    }
+
+    // Catches the viewer sizing its shared training storage before --add-splat is appended: training
+    // failed to start once the added splats outgrew the headroom of the initial model.
+    TEST_F(VisualizerImplResetTest, TrainingStartFitsAddedSplatsInSharedStorage) {
+        if (!cuda_device_available())
+            GTEST_SKIP() << "CUDA device unavailable";
+        VisualizerImpl viewer(projectOptions());
+        ASSERT_TRUE(viewer.getParameterManager()->ensureLoaded());
+        ASSERT_TRUE(viewer.getWindowManager()->init());
+        const auto* const context = viewer.getWindowManager()->getVulkanContext();
+        if (!context || !context->externalMemoryInteropEnabled())
+            GTEST_SKIP() << "Vulkan external memory interop unavailable";
+
+        const auto init = makeSplatFixture("training-init");
+        const auto added = temporary_.path / "training-added.ply";
+        ASSERT_TRUE(lfs::io::save_ply(*lfs::test::licht::make_splat(64),
+                                      {.output_path = added, .binary = true, .async = false}));
+        const auto dataset = temporary_.path / "training-added-dataset";
+        write_minimal_transforms_dataset(dataset);
+        auto& tasks = viewer.getGuiManager()->asyncTasks();
+        core::events::cmd::LoadFile{
+            .path = dataset,
+            .is_dataset = true,
+            .init_path = init,
+            .add_splat_paths = {added},
+            .discard_changes = true}
+            .emit();
+        ASSERT_TRUE(waitUntil([&] { tasks.pollImportCompletion(); return !tasks.isImporting(); }));
+
+        auto* const manager = viewer.getTrainerManager();
+        ASSERT_TRUE(manager->startTraining());
+        ASSERT_TRUE(waitUntil(
+            [&] {
+                viewer.pumpPostedWorkForProjectWrite();
+                return manager->getState() == TrainingState::Running ||
+                       manager->getState() == TrainingState::Finished;
+            },
+            std::chrono::seconds(60)));
+        EXPECT_EQ(manager->getState(), TrainingState::Running);
+        ASSERT_NE(viewer.getScene().getTrainingModel(), nullptr);
+        EXPECT_EQ(viewer.getScene().getTrainingModel()->size(), 66);
+
+        manager->stopTraining();
+        ASSERT_TRUE(waitUntil(
+            [&] {
+                viewer.pumpPostedWorkForProjectWrite();
+                return manager->getState() == TrainingState::Finished && !manager->isCompletionPending();
+            },
+            std::chrono::seconds(60)));
+    }
+
     TEST(ImportComparisonTest, ProvisionalThirdUsesItsOwnSlotWithoutChangingDisplayedPair) {
         const size_t displayed_offset = 0;
         const auto validation_offset = plyComparisonImportOffset(3, displayed_offset, 2);
@@ -8394,7 +8470,7 @@ contract["test_selection_submode_follows_native_mode"](lf)
     // Catches background maintenance grabbing the master writer lock while a
     // stopping trainer still owes its terminal append (lost training generation).
     TEST_F(VisualizerImplResetTest,
-           StoppingTrainerBlocksIdleCompactionAndAutosave) {
+           StoppingTrainerBlocksAutosave) {
         if (!cuda_device_available()) {
             GTEST_SKIP() << "CUDA device unavailable";
         }
@@ -8474,8 +8550,6 @@ contract["test_selection_submode_follows_native_mode"](lf)
                         std::chrono::steady_clock::
                             now() +
                         std::chrono::hours(1);
-                    lifecycle->settings_
-                        .compaction_idle_seconds = 1;
                     lifecycle->last_mutation_at_ =
                         std::chrono::steady_clock::
                             now() -
@@ -8495,24 +8569,6 @@ contract["test_selection_submode_follows_native_mode"](lf)
                         std::chrono::hours(1);
                 };
 
-            // Idle compaction would take the master
-            // writer lock the terminal append needs.
-            lifecycle->compaction_suggested_ = true;
-            lifecycle->scene_dirty_.store(
-                false, std::memory_order_release);
-            lifecycle->payload_dirty_.store(
-                false, std::memory_order_release);
-            prime_maintenance();
-            lifecycle->updateMaintenance();
-            EXPECT_FALSE(viewer.jobs().anyRunning(
-                JobType::ProjectWrite));
-            EXPECT_FALSE(
-                lifecycle->project_write_job_
-                    .has_value());
-
-            // Hard dirt blocks compaction, so this leg
-            // proves the autosave path stays parked too.
-            lifecycle->compaction_suggested_ = false;
             ASSERT_NE(
                 scene.addGroup("Hard dirt"),
                 lfs::core::NULL_NODE);
@@ -8530,6 +8586,45 @@ contract["test_selection_submode_follows_native_mode"](lf)
 
             viewer.getTrainerManager()
                 ->clearTrainer();
+        }
+    }
+
+    // Catches idle maintenance compacting the project, which keeps only the current save and
+    // removes every save the Contents list offers to restore.
+    TEST_F(VisualizerImplResetTest, IdleMaintenanceKeepsEverySave) {
+        const auto project_path = temporary_.path / "idle-saves.licht";
+        write_empty_project(project_path);
+        const auto save_count = [&] {
+            return lfs::test::licht::require_result(
+                       lfs::io::project::inspect_project_details(project_path))
+                .save_history.size();
+        };
+        {
+            VisualizerImpl viewer(projectOptions());
+            ASSERT_TRUE(viewer.getParameterManager()->ensureLoaded());
+            ASSERT_TRUE(viewer.projectOpen(project_path, ProjectSwitchDisposition::DiscardChanges));
+            const auto writes_finished = [&] {
+                return pumpUntil(viewer.work_queue_mutex_, viewer.work_queue_,
+                                 [&] { return !viewer.jobs().anyRunning(JobType::ProjectWrite); });
+            };
+            auto& scene = viewer.getScene();
+            for (const char* name : {"First edit", "Second edit"}) {
+                ASSERT_NE(scene.addGroup(name), lfs::core::NULL_NODE);
+                ASSERT_TRUE(viewer.projectSave(false));
+                ASSERT_TRUE(writes_finished());
+            }
+            const auto saves = save_count();
+            ASSERT_GE(saves, 2u);
+
+            auto* const lifecycle = viewer.project_lifecycle_.get();
+            ASSERT_NE(lifecycle, nullptr);
+            ASSERT_FALSE(lifecycle->hasDirtyProject());
+            lifecycle->compaction_suggested_ = true;
+            lifecycle->next_storage_check_at_ = std::chrono::steady_clock::now() + std::chrono::hours(1);
+            lifecycle->last_mutation_at_ = std::chrono::steady_clock::now() - std::chrono::hours(1);
+            lifecycle->updateMaintenance();
+            ASSERT_TRUE(writes_finished());
+            EXPECT_EQ(save_count(), saves);
         }
     }
 
@@ -9457,7 +9552,7 @@ contract["test_selection_submode_follows_native_mode"](lf)
         }
     }
 
-    TEST_F(VisualizerImplResetTest, ResetTrainingPreservesExplicitInitPath) {
+    TEST_F(VisualizerImplResetTest, ResetTrainingPreservesInitPathAndAddedSplats) {
         ViewerOptions options;
         options.show_startup_overlay = false;
 
@@ -9470,12 +9565,21 @@ contract["test_selection_submode_follows_native_mode"](lf)
 
         lfs::core::param::TrainingParameters params;
         params.init_path = "seed_points.ply";
+        params.add_splat_paths = {"background.ply"};
+        params.add_splat_freeze = {true};
+        params.freeze_lr_scale = 0.05f;
+        params.exclude_frozen_add_splats_from_export = true;
         viewer.getDataLoader()->setParameters(params);
 
         lfs::core::events::cmd::ResetTraining{}.emit();
 
-        ASSERT_TRUE(viewer.getDataLoader()->getParameters().init_path.has_value());
-        EXPECT_EQ(*viewer.getDataLoader()->getParameters().init_path, "seed_points.ply");
+        const auto& reset = viewer.getDataLoader()->getParameters();
+        ASSERT_TRUE(reset.init_path.has_value());
+        EXPECT_EQ(*reset.init_path, "seed_points.ply");
+        EXPECT_EQ(reset.add_splat_paths, params.add_splat_paths);
+        EXPECT_EQ(reset.add_splat_freeze, params.add_splat_freeze);
+        EXPECT_FLOAT_EQ(reset.freeze_lr_scale, 0.05f);
+        EXPECT_TRUE(reset.exclude_frozen_add_splats_from_export);
 
         std::error_code ec;
         std::filesystem::remove_all(dataset_path, ec);
