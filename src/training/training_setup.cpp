@@ -891,6 +891,31 @@ namespace lfs::training {
                           load_result->data);
     }
 
+    lfs::Result<std::shared_ptr<lfs::core::PointCloud>> loadInitialPointCloud(
+        const lfs::core::param::TrainingParameters& params, const glm::vec3& training_origin) {
+        if (params.init_path.has_value() && !params.init_path->empty()) {
+            auto loaded = loadInitReplacementPointCloud(lfs::core::utf8_to_path(*params.init_path));
+            if (loaded)
+                centerInitializationMeans((*loaded)->means, training_origin);
+            return loaded;
+        }
+
+        const lfs::io::LoadOptions load_options{
+            .resize_factor = params.dataset.resize_factor,
+            .max_width = params.dataset.max_width,
+            .images_folder = params.dataset.images,
+            .min_track_length = effectiveMinTrackLengthForLoad(params),
+            .centralize = parse_centralize(params.dataset.centralize_dataset)};
+        const auto data_path = lfs::core::path_to_utf8(params.dataset.data_path);
+        auto load_result = lfs::io::Loader::create()->load(params.dataset.data_path, load_options);
+        if (!load_result)
+            return initFileError(std::format("Failed to load '{}': {}", data_path, load_result.error().format()));
+        const auto* loaded = std::get_if<lfs::io::LoadedScene>(&load_result->data);
+        if (!loaded || !loaded->point_cloud || loaded->point_cloud->size() <= 0)
+            return initFileError(std::format("'{}' has no sparse points and no --init file was given", data_path));
+        return loaded->point_cloud;
+    }
+
     TrainingModelGraphCapture captureTrainingModelGraph(lfs::core::Scene& scene) {
         TrainingModelGraphCapture context;
         context.training_model = scene.getTrainingModel();
@@ -1262,6 +1287,21 @@ namespace lfs::training {
         }
 
         auto trainer = std::make_unique<Trainer>(scene);
+        auto source_nodes = document.scene_graph().nodes();
+        if (!source_nodes) {
+            return std::unexpected(std::format(
+                "Failed to read project scene graph for snapshot bindings: {}",
+                lfs::format_for_developer(source_nodes.error())));
+        }
+        lfs::io::project::ScenePayloadBindings snapshot_bindings;
+        const auto training_uuid = scene.getTrainingModelNodeUuid();
+        for (const auto& node : *source_nodes) {
+            if (node.uuid != training_uuid && node.payload) {
+                snapshot_bindings.emplace(node.uuid, *node.payload);
+            }
+        }
+        trainer->set_project_snapshot_payload_bindings(
+            std::move(snapshot_bindings));
         if (recovery_session) {
             trainer->set_recovery_session(*recovery_session);
         }

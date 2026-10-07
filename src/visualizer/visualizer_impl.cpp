@@ -1596,10 +1596,13 @@ namespace lfs::vis {
                 if (path.empty()) {
                     return;
                 }
-                if (auto saved =
-                        command.path.empty()
-                            ? projectSaveAsFromDialog(path, true)
-                            : projectSaveAs(path, true);
+                if (auto saved = command.path.empty()
+                                     ? projectSaveAsFromDialog(
+                                           path, true,
+                                           command.fresh_training_start)
+                                     : projectSaveAs(
+                                           path, true,
+                                           command.fresh_training_start);
                     !saved) {
                     publish_project_error(
                         "Save Project As",
@@ -3546,7 +3549,8 @@ namespace lfs::vis {
                 lfs::core::events::cmd::
                     ShowProjectSwitchConfirmation{
                         .new_project = true,
-                        .path = {}}
+                        .path = {},
+                        .stop_training = stop_training}
                         .emit();
                 return;
             }
@@ -3679,7 +3683,8 @@ namespace lfs::vis {
                     .path = {},
                     .create_path = path,
                     .allow_existing_destination_replacement =
-                        allow_existing_destination_replacement}
+                        allow_existing_destination_replacement,
+                    .stop_training = stop_training}
                     .emit();
                 return preflight;
             }
@@ -3797,7 +3802,8 @@ namespace lfs::vis {
                         .new_project = false,
                         .path = path,
                         .keep_asset_manager_open =
-                            keep_asset_manager_open}
+                            keep_asset_manager_open,
+                        .stop_training = stop_training}
                         .emit();
                 return;
             }
@@ -4253,6 +4259,14 @@ namespace lfs::vis {
     VisualizerImpl::projectSaveAs(
         const std::filesystem::path& path,
         const bool regenerate_preview) {
+        return projectSaveAs(path, regenerate_preview, false);
+    }
+
+    lfs::Result<void>
+    VisualizerImpl::projectSaveAs(
+        const std::filesystem::path& path,
+        const bool regenerate_preview,
+        const bool fresh_training_start) {
         if (!project_lifecycle_) {
             return visualizerFailure<void>(
                 lfs::ErrorCode::Unavailable,
@@ -4261,7 +4275,8 @@ namespace lfs::vis {
                 "project.lifecycle");
         }
         return project_lifecycle_->saveAs(
-            path, regenerate_preview);
+            path, regenerate_preview, false,
+            fresh_training_start);
     }
 
     lfs::Result<void>
@@ -4299,7 +4314,8 @@ namespace lfs::vis {
     lfs::Result<void>
     VisualizerImpl::projectSaveAsFromDialog(
         const std::filesystem::path& path,
-        const bool regenerate_preview) {
+        const bool regenerate_preview,
+        const bool fresh_training_start) {
         if (!project_lifecycle_) {
             return visualizerFailure<void>(
                 lfs::ErrorCode::Unavailable,
@@ -4308,7 +4324,8 @@ namespace lfs::vis {
                 "project.lifecycle");
         }
         return project_lifecycle_->saveAs(
-            path, regenerate_preview, true);
+            path, regenerate_preview, true,
+            fresh_training_start);
     }
 
     bool VisualizerImpl::projectContainsEmbeddedSecrets()

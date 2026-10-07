@@ -76,7 +76,7 @@ namespace lfs::core {
             EVENT(ShowResumeCheckpointPopup, std::filesystem::path checkpoint_path;);
             EVENT(NewProject, bool discard_changes = false; bool stop_training = false;);
             EVENT(ProjectSave, bool regenerate_preview = true;);
-            EVENT(ProjectSaveAs, std::filesystem::path path;);
+            EVENT(ProjectSaveAs, std::filesystem::path path; bool fresh_training_start = false;);
             EVENT(ProjectCreate, std::filesystem::path path; bool discard_changes = false; bool stop_training = false; bool allow_existing_destination_replacement = false;);
             EVENT(ProjectOpen, std::filesystem::path path; bool discard_changes = false; bool stop_training = false; bool keep_asset_manager_open = false;);
             EVENT(ProjectCompact, bool clean = false;
@@ -85,7 +85,7 @@ namespace lfs::core {
                   std::string expected_commit;
                   std::function<void(const std::string&)> on_started;);
             EVENT(ProjectEmbedDataset, );
-            EVENT(ShowProjectSwitchConfirmation, bool new_project = false; std::filesystem::path path; bool keep_asset_manager_open = false; std::filesystem::path create_path = {}; bool allow_existing_destination_replacement = false;);
+            EVENT(ShowProjectSwitchConfirmation, bool new_project = false; std::filesystem::path path; bool keep_asset_manager_open = false; std::filesystem::path create_path = {}; bool allow_existing_destination_replacement = false; bool stop_training = false;);
             EVENT(ShowLoadFileConfirmation, std::vector<std::filesystem::path> paths; bool is_dataset = false; bool replace = false; bool user_batch = false;);
             EVENT(ShowStopTrainingConfirmation, bool new_project = false; std::filesystem::path path; bool discard_changes = false; bool keep_asset_manager_open = false; std::filesystem::path create_path = {}; bool allow_existing_destination_replacement = false;);
             EVENT(SetReopenLastProject, bool enabled;);

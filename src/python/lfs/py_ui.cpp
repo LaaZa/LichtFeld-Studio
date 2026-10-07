@@ -48,6 +48,7 @@
 #include "visualizer/app_store.hpp"
 #include "visualizer/core/editor_context.hpp"
 #include "visualizer/core/services.hpp"
+#include "visualizer/gui/gizmo_manager.hpp"
 #include "visualizer/gui/gui_manager.hpp"
 #include "visualizer/gui/panel_registry.hpp"
 #include "visualizer/ipc/view_context.hpp"
@@ -3864,7 +3865,8 @@ namespace lfs::python {
                                                 event.path),
                                         event.keep_asset_manager_open,
                                         lfs::core::path_to_utf8(event.create_path),
-                                        event.allow_existing_destination_replacement);
+                                        event.allow_existing_destination_replacement,
+                                        event.stop_training);
                                 } catch (
                                     const std::
                                         exception& error) {
@@ -5035,6 +5037,11 @@ namespace lfs::python {
         m.def("get_multi_transform_mode", &get_multi_transform_mode, "Get multi-transform mode (0=Group, 1=Individual)");
 
         m.def("set_multi_transform_mode", &set_multi_transform_mode, nb::arg("mode"), "Set multi-transform mode (0=Group, 1=Individual)");
+
+        m.attr("MULTI_TRANSFORM_MODE_SELECTION") =
+            static_cast<int>(lfs::vis::gui::MultiTransformMode::Selection);
+        m.attr("MULTI_TRANSFORM_MODE_INDIVIDUAL") =
+            static_cast<int>(lfs::vis::gui::MultiTransformMode::Individual);
 
         // Thumbnail system (for Getting Started window)
         m.def("request_thumbnail", &request_thumbnail, nb::arg("video_id"),

@@ -701,6 +701,24 @@ namespace lfs::mcp {
         EXPECT_EQ(json::parse(serialize_response(failure))["id"], 7);
     }
 
+    TEST(McpProtocolTest, FractionalRequestIdsAreEchoedOnSuccess) {
+        McpServer server;
+        ASSERT_TRUE(server.handle_request(
+                              JsonRpcRequest{.id = int64_t{1}, .method = "initialize"})
+                        .result.has_value());
+        for (const auto request_text : {
+                 R"({"jsonrpc":"2.0","id":3.14159,"method":"ping"})",
+                 R"({"jsonrpc":"2.0","id":2.5,"method":"ping"})"}) {
+            const auto request_json = json::parse(request_text);
+            const auto expected_id = request_json.at("id");
+            const auto request = parse_request(request_text);
+            const auto response = server.handle_request(request);
+            ASSERT_TRUE(response.result.has_value());
+            EXPECT_FALSE(response.error.has_value());
+            EXPECT_EQ(json::parse(serialize_response(response)).at("id"), expected_id);
+        }
+    }
+
     TEST(McpProtocolTest, RequestIdStringEchoedOnSuccessAndErrorPaths) {
         McpServer server;
         const auto success = server.handle_request(JsonRpcRequest{.id = std::string("req-a"), .method = "ping"});
@@ -1455,6 +1473,33 @@ namespace lfs::mcp {
         EXPECT_EQ(handler_calls, 2);
         EXPECT_EQ(last_arguments["label"], "5") << "a number for a string parameter was not spelled as text";
         EXPECT_EQ(last_arguments["count"], 7) << "a numeric string for an integer parameter was not converted";
+    }
+
+    TEST(McpProtocolTest, OptionalBooleanNullIsRejectedBeforeTheHandler) {
+        static constexpr const char* tool_name = "test.optional_bool";
+        ScopedToolRegistration cleanup(tool_name);
+        int handler_calls = 0;
+        ToolRegistry::instance().register_tool(
+            McpTool{
+                .name = tool_name,
+                .description = "Optional boolean parameter",
+                .input_schema = {.type = "object",
+                                 .properties = json{{"include_poll", {{"type", "boolean"}}}},
+                                 .required = {}},
+                .metadata = McpToolMetadata{.category = "test", .kind = "query"}},
+            [&](const json&) -> json {
+                ++handler_calls;
+                return json{{"success", true}};
+            });
+
+        const auto result = ToolRegistry::instance().call_tool(
+            tool_name, json{{"include_poll", nullptr}});
+        const auto error = result.value("error", json::object());
+        EXPECT_EQ(error.value("code", std::string{}), "InvalidArgument");
+        EXPECT_EQ(error.value("details", json::object())
+                      .value("parameter", std::string{}),
+                  "include_poll");
+        EXPECT_EQ(handler_calls, 0);
     }
 
     TEST(McpProtocolTest, ArrayShapesAndNumericBoundsAreValidatedBeforeTheHandler) {

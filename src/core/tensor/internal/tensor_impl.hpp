@@ -1572,6 +1572,7 @@ namespace lfs::core {
                                   bool replacement = false);
         static Tensor arange(float end);
         static Tensor arange(float start, float end, float step = 1.0f);
+        static Tensor arange(float start, float end, float step, Device device);
         static Tensor linspace(float start, float end, size_t steps, Device device = Device::CUDA);
         static Tensor eye(size_t n, Device device = Device::CUDA);
         static Tensor eye(size_t m, size_t n, Device device = Device::CUDA);
@@ -2061,6 +2062,7 @@ namespace lfs::core {
             return slice(std::span<const std::pair<int, int>>(ranges));
         }
         Tensor slice(size_t dim, size_t start, size_t end) const;
+        Tensor slice(size_t dim, size_t start, size_t end, size_t step) const;
 
         Tensor cat(const Tensor& other, int dim = 0) const;
 

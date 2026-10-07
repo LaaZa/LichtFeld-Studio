@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Sequence
 import enum
-from typing import TypeAlias, overload
+from typing import Annotated, TypeAlias, overload
 
 from numpy.typing import NDArray
 import typing_extensions
@@ -296,6 +296,9 @@ def project_save(wait: bool = False, regenerate_preview: bool = True) -> bool:
 
 def project_save_as(path: str = '', wait: bool = False) -> bool:
     """Save the active project to a new .licht path"""
+
+def project_save_as_for_training_start(path: str = '', wait: bool = False) -> bool:
+    """Save a clean project for a new training run"""
 
 def project_get_license() -> dict | None:
     """Return the license metadata for the active project, or None"""
@@ -767,7 +770,7 @@ class Tensor:
         """Count non-zero elements"""
 
     @staticmethod
-    def from_numpy(arr: NDArray, copy: bool = True) -> Tensor:
+    def from_numpy(arr: Annotated[NDArray, dict(device='cpu')], copy: bool = True) -> Tensor:
         """Create tensor from NumPy array"""
 
     @staticmethod
@@ -816,10 +819,10 @@ class Tensor:
     def from_dlpack(obj: object) -> Tensor:
         """Create tensor from DLPack capsule or object"""
 
-    def __getitem__(self, arg: object, /) -> Tensor:
+    def __getitem__(self, key: object | None) -> Tensor:
         """Get item/slice"""
 
-    def __setitem__(self, arg0: object, arg1: object, /) -> None:
+    def __setitem__(self, key: object | None, value: object) -> None:
         """Set item/slice"""
 
     @overload
@@ -1980,6 +1983,15 @@ class EvalSpace(enum.Enum):
 
     UNDISTORTED = 1
 
+class EvalBitDepth(enum.Enum):
+    AUTO = 0
+
+    EIGHT = 1
+
+    SIXTEEN = 2
+
+    FLOAT = 3
+
 class DensifyErrorMap(enum.Enum):
     SSIM = 0
 
@@ -2156,6 +2168,15 @@ class OptimizationParams:
     def eval_all(self, arg: bool, /) -> None: ...
 
     @property
+    def eval_flip(self) -> bool:
+        """
+        Also compute FLIP per evaluated image and save its error map next to the evaluation images
+        """
+
+    @eval_flip.setter
+    def eval_flip(self, arg: bool, /) -> None: ...
+
+    @property
     def eval_mask(self) -> str:
         """
         Scores only part of each evaluated image (a mesh, a box, the crop box, a mask folder, a depth range, points or a splat); training is not affected
@@ -2202,15 +2223,6 @@ class OptimizationParams:
 
     @screen_share_penalty.setter
     def screen_share_penalty(self, arg: float, /) -> None: ...
-
-    @property
-    def oversize_split_fraction(self) -> float:
-        """
-        Fraction of MRNF growth budget used to split Gaussians over the screen-share cap; 0 disables
-        """
-
-    @oversize_split_fraction.setter
-    def oversize_split_fraction(self, arg: float, /) -> None: ...
 
     @property
     def steps_scaler(self) -> float:
@@ -2476,6 +2488,15 @@ class OptimizationParams:
 
     @eval_space.setter
     def eval_space(self, arg: EvalSpace, /) -> None: ...
+
+    @property
+    def eval_bit_depth(self) -> EvalBitDepth:
+        """
+        Grid the render is quantized to before evaluation metrics: auto = each reference image's own encoding (8-bit, 16-bit or float)
+        """
+
+    @eval_bit_depth.setter
+    def eval_bit_depth(self, arg: EvalBitDepth, /) -> None: ...
 
     @property
     def save_steps(self) -> list[int]:

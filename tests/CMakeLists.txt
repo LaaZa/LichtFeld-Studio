@@ -407,6 +407,10 @@ set(TEST_FILES
     test_fastgs_sort_buffers.cpp
     test_warp_cull_blend.cpp
     test_warp_cull_bwd.cpp
+    test_thin_structure.cpp
+    test_blob_seeding.cpp
+    test_rendered_structure.cpp
+    test_gradient_residual.cpp
     test_fused_reg_loss.cpp
     test_fused_bg_blend.cpp
     test_photometric_hygiene.cpp
@@ -497,6 +501,7 @@ set(TEST_FILES
     test_mask_preprocess_fusion.cpp
     test_roi_weight_map.cpp
     test_mesh_mask_kernels.cpp
+    test_flip.cpp
     test_roi_weighted_losses.cpp
     test_checkpoint_resume.cpp
     test_component_config_serialization.cpp
@@ -515,6 +520,7 @@ set(TEST_FILES
     test_training_command_masks.cpp
     test_headless_run_coordinator.cpp
     test_argument_parser.cpp
+    test_licht_command.cpp
     test_user_paths.cpp
     test_window_state.cpp
     test_crash_handler.cpp
@@ -649,6 +655,7 @@ set(TEST_FILES
     test_project_thumbnail_image.cpp
     test_camera_thumbnail_policy.cpp
     test_undistort.cpp
+    gut_camera_model_cuda.cu
     test_viewport_region_utils.cpp
     test_viewport_interop_decision.cpp
     test_mesh_data.cpp
@@ -747,6 +754,7 @@ list(APPEND TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/app/mcp_sequencer_tools.cpp
     ${CMAKE_SOURCE_DIR}/src/app/mcp_operator_schema.cpp
     ${CMAKE_SOURCE_DIR}/src/app/converter.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/licht_command.cpp
     ${CMAKE_SOURCE_DIR}/src/app/converter_output_paths.cpp
     ${CMAKE_SOURCE_DIR}/src/app/converter_overwrite.cpp
     ${CMAKE_SOURCE_DIR}/src/python/lfs/py_params.cpp
@@ -1146,8 +1154,12 @@ set(LFS_PYTHON_FAST_TESTS
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_store.py
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_store_subscriptions.py
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_float16_import.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_basic_indexing.py
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_arg_extrema_nan.py
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_empty_slices.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_empty_batch_matmul.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_float16_extraction.py
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_sign_nan.py
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_inverse_trig_domain.py
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_global_keepdim.py
@@ -1255,8 +1267,11 @@ add_test(NAME lichtfeld.python.gpu
     COMMAND ${Python_EXECUTABLE} -m pytest -q
         -m gpu
         ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_basic_indexing.py
         ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_arg_extrema_nan.py
         ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_empty_slices.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_empty_batch_matmul.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_float16_extraction.py
         ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_sign_nan.py
         ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_inverse_trig_domain.py
         ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_global_keepdim.py
