@@ -51,6 +51,7 @@
 #include "visualizer/gui/gizmo_manager.hpp"
 #include "visualizer/gui/gui_manager.hpp"
 #include "visualizer/gui/panel_registry.hpp"
+#include "visualizer/input/sdl_coordinate_utils.hpp"
 #include "visualizer/ipc/view_context.hpp"
 #include "visualizer/operation/undo_history.hpp"
 #include "visualizer/operator/operator_context.hpp"
@@ -64,6 +65,7 @@
 #include "visualizer/training/training_manager.hpp"
 #include "visualizer/visualizer.hpp"
 #include <RmlUi/Core/Core.h>
+#include <stdexcept>
 #include <typeinfo>
 
 #include "config.h"
@@ -2387,7 +2389,7 @@ namespace lfs::python {
     std::tuple<float, float> PyUILayout::get_mouse_pos() const {
         float x = 0.0f;
         float y = 0.0f;
-        SDL_GetMouseState(&x, &y);
+        lfs::vis::input::mouseStateInPixels(SDL_GetMouseFocus(), &x, &y);
         return {x, y};
     }
     std::tuple<float, float> PyUILayout::get_window_pos() const {
@@ -2764,7 +2766,7 @@ namespace lfs::python {
         m.def("get_mouse_screen_pos", []() -> nb::tuple {
             float x = 0.0f;
             float y = 0.0f;
-            SDL_GetMouseState(&x, &y);
+            lfs::vis::input::mouseStateInPixels(SDL_GetMouseFocus(), &x, &y);
             return nb::make_tuple(x, y);
         });
 
@@ -4227,7 +4229,13 @@ namespace lfs::python {
 
         m.def(
             "toggle_gt_comparison",
-            []() { lfs::core::events::cmd::ToggleGTComparison{}.emit(); },
+            []() {
+                auto* const rendering = lfs::python::get_rendering_manager();
+                if (!rendering || (!rendering->isGTComparisonActive() && !rendering->hasGTComparisonAvailable())) {
+                    throw std::runtime_error("GT comparison requires a loaded dataset with source images");
+                }
+                lfs::core::events::cmd::ToggleGTComparison{}.emit();
+            },
             "Toggle ground-truth comparison split view");
 
         m.def(

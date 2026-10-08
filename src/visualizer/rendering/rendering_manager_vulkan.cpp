@@ -613,7 +613,7 @@ namespace lfs::vis {
                          },
                          .focal_length_mm = settings.focal_length_mm,
                          .orthographic = settings.orthographic,
-                         .ortho_scale = settings.ortho_scale},
+                         .ortho_scale = viewport->ortho_scale_override.value_or(settings.ortho_scale)},
                     .viewport_pos = {screen_viewport_pos.x + offset_x, screen_viewport_pos.y},
                     .viewport_size = {width, screen_viewport_size.y},
                 });
@@ -973,7 +973,6 @@ namespace lfs::vis {
                 item.backface_culling = settings.mesh_backface_culling;
                 item.is_emphasized = mesh.is_selected;
                 item.dim_non_emphasized = dim_non_emphasized;
-                item.flash_intensity = frame_ctx.selection_flash_intensity;
                 item.wireframe_overlay = settings.mesh_wireframe;
                 item.wireframe_color = settings.mesh_wireframe_color;
                 item.wireframe_width = settings.mesh_wireframe_width;
@@ -1876,7 +1875,7 @@ namespace lfs::vis {
         }
 
         const auto framebuffer_region =
-            resolveFramebufferViewportRegion(context.viewport, context.logical_screen_size, context.viewport_region);
+            resolveFramebufferViewportRegion(context.viewport, context.screen_size_px, context.viewport_region);
         if (framebuffer_region.valid() && !context.preparing_import) {
             // resolveFramebufferViewportRegion reports a GL bottom-left origin; window
             // readbacks are top-left, so store the flipped form callers actually crop with.
@@ -2573,12 +2572,12 @@ namespace lfs::vis {
             .viewport_pos = {0, 0},
             .frame_dirty = frame_dirty,
             .training_active = is_training,
+            .gaussian_selection_visible = gaussian_selection_visible_,
             .cursor_preview = viewport_overlay_service_.cursorPreview(),
             .gizmo = viewport_overlay_service_.makeFrameGizmoState(),
             .hovered_camera_id = camera_interaction_service_.hoveredCameraId(),
             .current_camera_id = camera_interaction_service_.currentCameraId(),
             .hovered_gaussian_id = viewport_overlay_service_.hoveredGaussianId(),
-            .selection_flash_intensity = getSelectionFlashIntensity(),
             .view_panels = {}};
 
         std::shared_ptr<lfs::core::Tensor> rendered_image;
@@ -3985,6 +3984,16 @@ namespace lfs::vis {
                     },
                     metadata,
                     render_result->size);
+                viewport_artifact_service_.setDepthSampler(
+                    [this, size = render_result->size](
+                        int x, int y, std::optional<SplitViewPanelId>, bool nonblocking) {
+                        if (!point_cloud_vulkan_renderer_ || !last_vulkan_context_)
+                            return -1.0f;
+                        return point_cloud_vulkan_renderer_->sampleDepthAtPixel(
+                                                               *last_vulkan_context_,
+                                                               {.pixel = {x, y}, .source_size = size, .nonblocking = nonblocking})
+                            .value_or(-1.0f);
+                    });
 
                 if (resize_result.completed) {
                     lfs::core::Tensor::trim_memory_pool();

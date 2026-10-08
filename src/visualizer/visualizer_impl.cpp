@@ -503,7 +503,9 @@ namespace lfs::vis {
                 }));
             callback_cleanup_.add([token] { token->reset(); });
         };
-        bind_view_input(app_store().scene_generation, DirtyFlag::ALL, FrameReason::SceneChange);
+        // Scene publishes geometry invalidation directly. Its UI generation also
+        // changes for matrices, which must retain the resident splat inputs.
+        bind_view_input(app_store().scene_generation, DirtyFlag::MESH | DirtyFlag::OVERLAY, FrameReason::SceneChange);
         bind_view_input(app_store().selection_generation, DirtyFlag::SELECTION | DirtyFlag::OVERLAY, FrameReason::Selection);
         bind_view_input(app_store().render_settings_generation, DirtyFlag::ALL, FrameReason::SettingsChange);
         auto active_tool_poll_cache_token = std::make_shared<core::reactive::SubscriptionToken>(
@@ -2285,6 +2287,9 @@ namespace lfs::vis {
         if (selection_tool_ && selection_tool_->isEnabled() && tool_context_) {
             selection_tool_->update(*tool_context_);
         }
+        if (align_tool_ && align_tool_->isEnabled() && tool_context_) {
+            align_tool_->update(*tool_context_);
+        }
 
         if (!gui_frame_rendered_) {
             // Wait for at least one GUI frame to render before loading data
@@ -2749,7 +2754,7 @@ namespace lfs::vis {
         RenderingManager::RenderContext context{
             .viewport = viewport_,
             .settings = rendering_manager_->getSettings(),
-            .logical_screen_size = window_manager_->getWindowSize(),
+            .screen_size_px = window_manager_->getFramebufferSize(),
             .viewport_region = has_viewport_region ? &viewport_region : nullptr,
             .scene_manager = scene_manager_.get(),
             .vulkan_context = window_manager_->getVulkanContext()};

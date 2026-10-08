@@ -12,6 +12,7 @@
 #include "python/python_runtime.hpp"
 #include "rendering/rendering_manager.hpp"
 #include "scene/scene_manager.hpp"
+#include "visualizer/input/sdl_coordinate_utils.hpp"
 #include "visualizer/scene_coordinate_utils.hpp"
 #include "visualizer_impl.hpp"
 
@@ -39,7 +40,7 @@ namespace lfs::python {
             static bool previous_left_down = false;
             float mouse_x = 0.0f;
             float mouse_y = 0.0f;
-            const SDL_MouseButtonFlags buttons = SDL_GetMouseState(&mouse_x, &mouse_y);
+            const SDL_MouseButtonFlags buttons = lfs::vis::input::mouseStateInPixels(SDL_GetMouseFocus(), &mouse_x, &mouse_y);
             const bool left_down = (buttons & SDL_BUTTON_LMASK) != 0;
             const bool left_clicked = left_down && !previous_left_down;
             previous_left_down = left_down;
@@ -118,19 +119,6 @@ namespace lfs::python {
                 safe_normalize(glm::vec3(matrix[0]), {1.0f, 0.0f, 0.0f}),
                 safe_normalize(glm::vec3(matrix[1]), {0.0f, 1.0f, 0.0f}),
                 safe_normalize(glm::vec3(matrix[2]), {0.0f, 0.0f, 1.0f}));
-        }
-
-        void mark_scene_transform_changed() {
-            if (auto* sm = get_scene_manager()) {
-                sm->getScene().notifyMutation(core::Scene::MutationType::MODEL_CHANGED);
-            }
-
-            auto* gm = get_gui_manager();
-            auto* viewer = gm ? gm->getViewer() : nullptr;
-            auto* rm = viewer ? viewer->getRenderingManager() : nullptr;
-            if (rm) {
-                rm->markDirty(vis::DirtyFlag::SPLATS | vis::DirtyFlag::MESH | vis::DirtyFlag::OVERLAY, lfs::vis::FrameReason::SceneChange);
-            }
         }
 
         [[nodiscard]] bool callable_or_none(const nb::object& object) {
@@ -600,12 +588,15 @@ namespace lfs::python {
                     const auto local_transform =
                         vis::scene_coords::nodeLocalTransformFromVisualizerWorld(
                             sm->getScene(), state_->target_node_name, state_->matrix);
-                    if (local_transform)
-                        sm->setNodeTransform(state_->target_node_name, *local_transform);
+                    if (!local_transform) {
+                        LOG_WARN("TransformGizmo '{}' rejected a target transform because its parent cannot preserve a finite world transform",
+                                 state_->id);
+                        return;
+                    }
+                    sm->setNodeTransform(state_->target_node_name, *local_transform);
                 } else {
                     sm->setNodeTransform(state_->target_node_name, state_->matrix);
                 }
-                mark_scene_transform_changed();
             }
         }
 

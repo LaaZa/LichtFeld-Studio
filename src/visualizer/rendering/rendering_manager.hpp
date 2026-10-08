@@ -87,7 +87,7 @@ namespace lfs::vis {
         struct RenderContext {
             const Viewport& viewport;
             const RenderSettings& settings;
-            glm::ivec2 logical_screen_size{0, 0};
+            glm::ivec2 screen_size_px{0, 0};
             const ViewportRegion* viewport_region = nullptr;
             SceneManager* scene_manager = nullptr;
             VulkanContext* vulkan_context = nullptr;
@@ -279,15 +279,7 @@ namespace lfs::vis {
             animation_state_.setPivotAnimationEndTime(end_time);
         }
 
-        void triggerSelectionFlash() {
-            markDirty(animation_state_.triggerSelectionFlash(), lfs::vis::FrameReason::Selection);
-        }
-
         void setOverlayAnimationActive(const bool active) { animation_state_.setOverlayAnimationActive(active); }
-
-        [[nodiscard]] float getSelectionFlashIntensity() const {
-            return animation_state_.selectionFlashIntensity();
-        }
 
         // Settings management
         void updateSettings(const RenderSettings& settings);
@@ -312,6 +304,7 @@ namespace lfs::vis {
         [[nodiscard]] std::optional<SplitViewInfo> getSplitViewInfoIfChanged(std::uint64_t& generation) const;
         [[nodiscard]] bool isSplitViewActive() const;
         [[nodiscard]] bool isGTComparisonActive() const;
+        [[nodiscard]] bool hasGTComparisonAvailable() const;
         [[nodiscard]] bool isPLYComparisonActive() const;
         [[nodiscard]] bool isIndependentSplitViewActive() const;
         [[nodiscard]] GTComparisonMode getGTComparisonMode() const;
@@ -459,7 +452,7 @@ namespace lfs::vis {
         int pickCameraFrustum(const glm::vec2& mouse_pos);
 
         // Depth access for tools (returns camera-space depth at pixel, or -1 if invalid).
-        float getDepthAtPixel(int x, int y, std::optional<SplitViewPanelId> panel = std::nullopt) const;
+        float getDepthAtPixel(int x, int y, std::optional<SplitViewPanelId> panel = std::nullopt, bool nonblocking = false) const;
         struct ExpectedDepthSampleRequest {
             SceneManager* scene_manager = nullptr;
             const Viewport* viewport = nullptr;
@@ -498,7 +491,7 @@ namespace lfs::vis {
                                    lfs::core::Tensor* selection_tensor = nullptr,
                                    bool saturation_mode = false, float saturation_amount = 0.0f,
                                    std::optional<SplitViewPanelId> panel = std::nullopt,
-                                   int focused_gaussian_id = -1, bool request_render = true);
+                                   int focused_gaussian_id = -1, bool highlight_splats = true);
         void clearCursorPreviewState();
         [[nodiscard]] bool isCursorPreviewActive() const { return viewport_overlay_service_.isCursorPreviewActive(); }
         [[nodiscard]] std::optional<SplitViewPanelId> getCursorPreviewPanel() const {
@@ -584,18 +577,12 @@ namespace lfs::vis {
             lfs::vis::VulkanDepthBlitParams depth_blit;
             lfs::vis::VulkanSplitViewParams split_view;
         };
-        void setVulkanMeshFrame(VulkanMeshFrame frame) {
-            std::lock_guard lock(vulkan_mesh_frame_mutex_);
-            vulkan_mesh_frame_ = std::move(frame);
-        }
+        void setVulkanMeshFrame(VulkanMeshFrame frame);
         [[nodiscard]] VulkanMeshFrame getVulkanMeshFrame() const {
             std::lock_guard lock(vulkan_mesh_frame_mutex_);
             return vulkan_mesh_frame_;
         }
-        void clearVulkanMeshFrame() {
-            std::lock_guard lock(vulkan_mesh_frame_mutex_);
-            vulkan_mesh_frame_ = {};
-        }
+        void clearVulkanMeshFrame();
 
         // Preview selection
         void setPreviewSelection(lfs::core::Tensor* preview, bool add_mode = true) {
@@ -614,6 +601,12 @@ namespace lfs::vis {
         }
         [[nodiscard]] SelectionPreviewMode getSelectionPreviewMode() const {
             return viewport_overlay_service_.selectionPreviewMode();
+        }
+        void setGaussianSelectionVisible(const bool visible) {
+            if (gaussian_selection_visible_ == visible)
+                return;
+            gaussian_selection_visible_ = visible;
+            markDirty(DirtyFlag::SELECTION, lfs::vis::FrameReason::Selection);
         }
         [[nodiscard]] int getHoveredGaussianId() const { return viewport_overlay_service_.hoveredGaussianId(); }
 
@@ -1002,11 +995,13 @@ namespace lfs::vis {
         ViewportInteractionContext viewport_interaction_context_;
 
         ViewportOverlayService viewport_overlay_service_;
+        bool gaussian_selection_visible_ = true;
 
         lfs::event::ScopedHandler event_handlers_;
 
         friend class RenderingManagerEventsTest_SceneClearedResetsFrustumLoaderSyncCache_Test;
         friend class SceneManager;
+        friend struct SplitOutputLifetimeTestAccess;
     };
 
 } // namespace lfs::vis

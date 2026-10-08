@@ -35,6 +35,23 @@ endif()
 # Find GTest
 find_package(GTest CONFIG REQUIRED)
 
+# Headless SDL boundary regression tests, also built in the CPU-only CI configuration.
+# Do not link SDL itself: this isolated executable provides the four SDL state
+# queries used by the production coordinate helpers and frame finalization.
+
+add_executable(lichtfeld_sdl_coordinate_tests test_sdl_pixel_coordinates.cpp)
+target_compile_features(lichtfeld_sdl_coordinate_tests PRIVATE cxx_std_23)
+target_include_directories(lichtfeld_sdl_coordinate_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/visualizer
+)
+target_link_libraries(lichtfeld_sdl_coordinate_tests PRIVATE
+    GTest::gtest_main
+    SDL3::Headers
+    glm::glm
+)
+add_test(NAME lichtfeld.sdl_coordinates COMMAND lichtfeld_sdl_coordinate_tests)
+set_tests_properties(lichtfeld.sdl_coordinates PROPERTIES LABELS "fast;cpu;input" TIMEOUT 30)
+
 # =============================================================================
 # CPU-only visualizer tests (no LibTorch)
 # =============================================================================
@@ -51,14 +68,18 @@ if(BUILD_VISUALIZER_TESTS)
     endif()
 
     set(LICHTFELD_VISUALIZER_TEST_SOURCES
+        test_align_transform.cpp
+        test_orthographic_zoom.cpp
+        test_ui_visibility_transition.cpp
         test_menu_bar_title.cpp
         test_panel_layout_render_demand.cpp
         test_preferences_migration.cpp
         test_python_editor_input.cpp
         test_startup_overlay_geometry.cpp
         test_vram_hud_geometry.cpp
+        test_vram_hud_header_click.cpp
     )
-    add_executable(lichtfeld_visualizer_tests EXCLUDE_FROM_ALL
+    add_executable(lichtfeld_visualizer_tests
         ${LICHTFELD_VISUALIZER_TEST_SOURCES}
     )
     target_compile_features(lichtfeld_visualizer_tests PRIVATE cxx_std_23)
@@ -74,6 +95,7 @@ if(BUILD_VISUALIZER_TESTS)
         lfs_python_runtime
         GTest::gtest_main
         Zep::Zep
+        SDL3::SDL3
     )
     add_test(
         NAME lichtfeld_visualizer_tests
@@ -432,6 +454,7 @@ set(TEST_FILES
     test_splat_affine_transform.cpp
     test_splat_sh_affine.cpp
     test_splat_data_clone.cpp
+    test_splat_data_mirror.cpp
     test_tensor_reduction.cpp
     test_tensor_reduction_alignment.cpp
     test_tensor_views.cpp
@@ -587,6 +610,7 @@ set(TEST_FILES
     test_python_io.cpp
     test_extended_unary_ops_vs_torch.cpp
     test_scene_validity.cpp
+    test_scene_bounds_cache.cpp
     test_training_scene_init_concurrency.cpp
     test_training_init_centering.cpp
     test_scene_consolidation.cpp
@@ -680,6 +704,8 @@ set(TEST_FILES
     test_training_progress_publisher.cpp
     test_startup_overlay_geometry.cpp
     test_vram_hud_geometry.cpp
+    test_vram_hud_header_click.cpp
+    test_ui_visibility_transition.cpp
     test_menu_bar_title.cpp
     test_status_bar_mining.cpp
     test_rotated_sh_correctness.cpp
@@ -727,6 +753,7 @@ list(APPEND TEST_FILES test_vulkan_gpu_census.cpp)
 list(APPEND TEST_FILES test_output_image_pool.cpp)
 # Epic #1568 / #1567: output slot ring (GPU-free host bookkeeping).
 list(APPEND TEST_FILES test_output_slot_ring.cpp)
+list(APPEND TEST_FILES test_split_output_lifetime.cpp)
 # Epic #1577 / #1574: readback ticket ring (GPU-free host bookkeeping).
 list(APPEND TEST_FILES test_readback_ticket_ring.cpp)
 # Epic #1568 / #1566: payload-generic GpuResourcePool + subrect fit helper.
@@ -739,6 +766,7 @@ list(APPEND TEST_FILES test_octree_lod.cpp)
 list(APPEND TEST_FILES test_ply_to_rad_lod.cpp)
 list(APPEND TEST_FILES test_rad_gpu_encode.cpp)
 list(APPEND TEST_FILES test_rad_meta_sidecar.cpp)
+list(APPEND TEST_FILES test_rad_spark_paging.cpp)
 
 # Keep the source manifest strict: a stale entry should fail configuration
 # instead of silently dropping coverage from the executable.
@@ -840,6 +868,7 @@ if(NOT LFS_SIMPLIFY_TEST_PLY_OK)
             "SplatSimplify.RealPlySimplifyDoesNotUndershootRequestedTarget will be skipped.")
     endif()
 endif()
+target_compile_definitions(lichtfeld_tests PRIVATE LFS_SIMPLIFY_TEST_PLY="${LFS_SIMPLIFY_TEST_PLY}")
 
 if(CMAKE_CXX_LINK_GROUP_USING_RESCAN_SUPPORTED)
     set(LFS_TEST_INTERNAL_LINK_LIBS

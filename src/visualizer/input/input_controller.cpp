@@ -17,6 +17,7 @@
 #include "input/input_router.hpp"
 #include "input/input_types.hpp"
 #include "input/key_codes.hpp"
+#include "input/sdl_coordinate_utils.hpp"
 #include "input/sdl_key_mapping.hpp"
 #include "io/loader.hpp"
 #include "io/splat_path.hpp"
@@ -380,31 +381,31 @@ namespace lfs::vis {
         split_toggle_handler_id_ = cmd::ToggleSplitView::when([this](const auto&) {
             clearViewportDragState();
             clearWasdMomentumViewport();
-            focusSplitPanel(SplitViewPanelId::Left);
+            resetSplitPanelFocus();
         });
         independent_split_toggle_handler_id_ = cmd::ToggleIndependentSplitView::when([this](const auto&) {
             clearViewportDragState();
             clearWasdMomentumViewport();
-            focusSplitPanel(SplitViewPanelId::Left);
+            resetSplitPanelFocus();
         });
         gt_comparison_toggle_handler_id_ = cmd::ToggleGTComparison::when([this](const auto&) {
             clearViewportDragState();
             clearWasdMomentumViewport();
-            focusSplitPanel(SplitViewPanelId::Left);
+            resetSplitPanelFocus();
         });
         scene_cleared_handler_id_ = state::SceneCleared::when([this](const auto&) {
             clearViewportDragState();
             clearWasdMomentumViewport();
             scene_extent_ = 0.0f;
             depth_range_initialized_ = false;
-            focusSplitPanel(SplitViewPanelId::Left);
+            resetSplitPanelFocus();
         });
         scene_loaded_handler_id_ = state::SceneLoaded::when([this](const auto&) {
             clearViewportDragState();
             clearWasdMomentumViewport();
             scene_extent_ = 0.0f;
             depth_range_initialized_ = false;
-            focusSplitPanel(SplitViewPanelId::Left);
+            resetSplitPanelFocus();
         });
 
         window_focus_lost_handler_id_ = internal::WindowFocusLost::when([this](const auto&) {
@@ -462,7 +463,7 @@ namespace lfs::vis {
 
         // Get initial mouse position
         float fx, fy;
-        SDL_GetMouseState(&fx, &fy);
+        input::mouseStateInPixels(window_, &fx, &fy);
         last_mouse_pos_ = {fx, fy};
 
         // Initialize frame timer
@@ -783,7 +784,11 @@ namespace lfs::vis {
             is_left_button &&
             action == input::ACTION_PRESS) {
             if (isInViewport(x, y) && isIndependentSplitViewActive()) {
-                focusSplitPanel(splitPanelForScreenX(x));
+                const SplitViewPanelId panel = splitPanelForScreenX(x);
+                focusSplitPanel(panel);
+                if (selection_tool_) {
+                    selection_tool_->setFilterPanel(panel);
+                }
             }
 
             // Check for double-click on camera frustum
@@ -878,6 +883,10 @@ namespace lfs::vis {
         }
 
         const bool is_right_button = button == static_cast<int>(input::AppMouseButton::RIGHT);
+        if (action == input::ACTION_PRESS && is_right_button && isTransformGizmoUsing() && gui &&
+            gui->gizmo().cancelActiveNodeTransformDrag()) {
+            return;
+        }
         if (action == input::ACTION_PRESS &&
             is_right_button &&
             pending_camera_context_menu_.active &&
@@ -893,8 +902,11 @@ namespace lfs::vis {
             // Pivot placement is a viewport-global double-click gesture and must
             // remain available when an editing gizmo is merely hovered. Active
             // gizmo manipulation still owns the pointer until the drag finishes.
+            // Gizmos only grab the left button, so hovering one never blocks
+            // camera navigation on the other buttons.
             if (isTransformGizmoUsing() ||
-                (over_transform_gizmo && bound_action != input::Action::CAMERA_SET_PIVOT)) {
+                (is_left_button && over_transform_gizmo &&
+                 bound_action != input::Action::CAMERA_SET_PIVOT)) {
                 return;
             }
 
@@ -1312,6 +1324,10 @@ namespace lfs::vis {
         glm::dvec2 current_pos{x, y};
         const double delta_x = x - last_mouse_pos_.x;
         const double delta_y = y - last_mouse_pos_.y;
+        if (align_tool_ && align_tool_->isEnabled() && (delta_x != 0.0 || delta_y != 0.0)) {
+            if (auto* rendering = services().renderingOrNull())
+                rendering->markDirty(DirtyFlag::OVERLAY, FrameReason::Overlay, "align_cursor_moved");
+        }
 
         // Dispatch to modal operators first - if consumed, don't continue
         bool over_gui = false;
@@ -1525,7 +1541,7 @@ namespace lfs::vis {
         }
 
         float fx, fy;
-        SDL_GetMouseState(&fx, &fy);
+        input::mouseStateInPixels(window_, &fx, &fy);
         double mouse_x = fx, mouse_y = fy;
         bool over_gui = false;
         bool over_gui_hover = false;
@@ -1597,12 +1613,13 @@ namespace lfs::vis {
                     constexpr float MIN_ORTHO_SCALE = 1.0f;
                     constexpr float MAX_ORTHO_SCALE = 10000.0f;
                     const float scale_factor = 1.0f + delta * ORTHO_ZOOM_FACTOR;
-                    if (&target_viewport != &viewport_) {
-                        const float current = target_viewport.ortho_scale_override.value_or(settings.ortho_scale);
-                        target_viewport.ortho_scale_override =
-                            std::clamp(current * scale_factor, MIN_ORTHO_SCALE, MAX_ORTHO_SCALE);
-                    } else {
-                        settings.ortho_scale = std::clamp(settings.ortho_scale * scale_factor, MIN_ORTHO_SCALE, MAX_ORTHO_SCALE);
+                    const float current = target_viewport.ortho_scale_override.value_or(settings.ortho_scale);
+                    const float scale = std::clamp(current * scale_factor, MIN_ORTHO_SCALE, MAX_ORTHO_SCALE);
+                    if (&target_viewport != &viewport_ || target_viewport.ortho_scale_override) {
+                        target_viewport.ortho_scale_override = scale;
+                    }
+                    if (&target_viewport == &viewport_) {
+                        settings.ortho_scale = scale;
                         services().renderingOrNull()->updateSettings(settings);
                     }
                 } else {
@@ -1670,6 +1687,11 @@ namespace lfs::vis {
                                             ? input_router_->keyboardFocus() == input::InputTarget::Gui
                                             : gui::guiFocusState().want_capture_keyboard;
         if (action == input::ACTION_PRESS && logical_key == input::KEY_ESCAPE &&
+            isTransformGizmoUsing() && gui && gui->gizmo().cancelActiveNodeTransformDrag()) {
+            return;
+        }
+
+        if (action == input::ACTION_PRESS && logical_key == input::KEY_ESCAPE &&
             gui_keyboard_focus) {
             return;
         }
@@ -1693,7 +1715,7 @@ namespace lfs::vis {
 
         // Dispatch to modal operators first - if consumed, don't continue
         float mx_f, my_f;
-        SDL_GetMouseState(&mx_f, &my_f);
+        input::mouseStateInPixels(window_, &mx_f, &my_f);
         double mx = mx_f, my = my_f;
         const bool over_gui_hover = isPointerOverUiHover(mx, my);
         if (action == input::ACTION_PRESS &&
@@ -1779,7 +1801,13 @@ namespace lfs::vis {
                 return;
 
             case input::Action::TOGGLE_GT_COMPARISON:
-                cmd::ToggleGTComparison{}.emit();
+                if (auto* const rendering = services().renderingOrNull();
+                    rendering && (rendering->isGTComparisonActive() || rendering->hasGTComparisonAvailable())) {
+                    cmd::ToggleGTComparison{}.emit();
+                } else if (const auto* const scene_manager = services().sceneOrNull();
+                           scene_manager && scene_manager->getScene().getVisibleSplatNodeSlots().size() >= 2) {
+                    cmd::ToggleSplitView{}.emit();
+                }
                 return;
 
             case input::Action::OPEN_PREFERENCES:
@@ -2089,7 +2117,7 @@ namespace lfs::vis {
             case input::Action::PIE_MENU:
                 if (gui) {
                     float px, py;
-                    SDL_GetMouseState(&px, &py);
+                    input::mouseStateInPixels(window_, &px, &py);
                     gui->gizmo().openPieMenu({px, py});
                 }
                 return;
@@ -2341,7 +2369,6 @@ namespace lfs::vis {
             if (!drone_viewport && active_movement_viewport->camera.hasDroneMotion())
                 drone_viewport = active_movement_viewport;
             if (drone_viewport && (keys_active || drone_viewport->camera.hasDroneMotion())) {
-                drone_viewport->camera.setSceneExtent(sceneExtent());
                 drone_viewport->camera.advanceDrone(
                     delta_time,
                     keys_active && keys_movement_[0],
@@ -2369,7 +2396,6 @@ namespace lfs::vis {
         } else {
             auto* const movement_viewport = keys_active ? active_movement_viewport : wasd_momentum_viewport_;
             if (movement_viewport && (keys_active || movement_viewport->camera.hasWasdMomentum())) {
-                movement_viewport->camera.setSceneExtent(sceneExtent());
                 movement_viewport->camera.advanceWasd(
                     delta_time,
                     keys_active && keys_movement_[0],
@@ -2876,7 +2902,7 @@ namespace lfs::vis {
         }
 
         cmd::ToggleIndependentSplitView{.viewport = &viewport_}.emit();
-        focusSplitPanel(SplitViewPanelId::Left);
+        resetSplitPanelFocus();
     }
 
     SplitViewPanelId InputController::splitPanelForScreenX(const double x) const {
@@ -2933,6 +2959,13 @@ namespace lfs::vis {
     void InputController::focusSplitPanel(const SplitViewPanelId panel) {
         if (auto* const rendering = services().renderingOrNull()) {
             rendering->setFocusedSplitPanel(panel);
+        }
+    }
+
+    void InputController::resetSplitPanelFocus() {
+        focusSplitPanel(SplitViewPanelId::Left);
+        if (selection_tool_) {
+            selection_tool_->setFilterPanel(SplitViewPanelId::Left);
         }
     }
 

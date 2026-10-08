@@ -19,6 +19,7 @@
 #include "gui/frustum_overlay_key.hpp"
 #include "gui/import_error.hpp"
 #include "gui/viewport_gizmo_geometry.hpp"
+#include "gui/volume_guide_visibility.hpp"
 #include "preferences.hpp"
 #include "window/vulkan_result.hpp"
 #include <ft2build.h>
@@ -569,7 +570,8 @@ namespace lfs::vis::gui {
                                     const glm::vec4& color,
                                     const float thickness,
                                     const float view_depth_p0 = 0.0f,
-                                    const float view_depth_p1 = 0.0f) {
+                                    const float view_depth_p1 = 0.0f,
+                                    const std::optional<lfs::rendering::OverlayClipRect>& clip = std::nullopt) {
             if (color.a <= 0.0f) {
                 return;
             }
@@ -581,21 +583,43 @@ namespace lfs::vis::gui {
             const glm::vec2 dir = delta / len;
             const glm::vec2 normal(-dir.y, dir.x);
             const float extent = std::max(thickness, 1.0f) * 0.5f + 2.0f;
-            appendShapeOverlayQuad(out,
-                                   params.viewport_pos,
-                                   params.viewport_size,
-                                   p0 - dir * extent + normal * extent,
-                                   p1 + dir * extent + normal * extent,
-                                   p1 + dir * extent - normal * extent,
-                                   p0 - dir * extent - normal * extent,
-                                   p0,
-                                   p1,
-                                   color,
-                                   {0.0f, std::max(thickness, 1.0f), 0.0f, 1.0f},
-                                   view_depth_p0,
-                                   view_depth_p1,
-                                   view_depth_p1,
-                                   view_depth_p0);
+            const glm::vec4 shape_params{0.0f, std::max(thickness, 1.0f), 0.0f, 1.0f};
+            const std::array<glm::vec2, 4> corners{
+                p0 - dir * extent + normal * extent,
+                p1 + dir * extent + normal * extent,
+                p1 + dir * extent - normal * extent,
+                p0 - dir * extent - normal * extent,
+            };
+            if (!clip) {
+                appendShapeOverlayQuad(out,
+                                       params.viewport_pos,
+                                       params.viewport_size,
+                                       corners[0],
+                                       corners[1],
+                                       corners[2],
+                                       corners[3],
+                                       p0,
+                                       p1,
+                                       color,
+                                       shape_params,
+                                       view_depth_p0,
+                                       view_depth_p1,
+                                       view_depth_p1,
+                                       view_depth_p0);
+                return;
+            }
+
+            const auto clipped = clipPolygonToRect(corners, *clip);
+            const auto depth_at = [&](const glm::vec2& point) {
+                const float t = std::clamp(glm::dot(point - p0, dir) / len, 0.0f, 1.0f);
+                return std::lerp(view_depth_p0, view_depth_p1, t);
+            };
+            for (size_t i = 1; i + 1 < clipped.size(); ++i) {
+                for (const glm::vec2& point : {clipped[0], clipped[i], clipped[i + 1]}) {
+                    appendShapeOverlayTriangle(out, params.viewport_pos, params.viewport_size,
+                                               point, p0, p1, color, shape_params, depth_at(point));
+                }
+            }
         }
 
         void appendShapeOverlayCircle(std::vector<VulkanViewportShapeOverlayVertex>& out,
@@ -1137,6 +1161,7 @@ namespace lfs::vis::gui {
             const RenderSettings& settings,
             const glm::vec3& world_a,
             const glm::vec3& world_b) {
+            const float ortho_scale = panel.viewport->ortho_scale_override.value_or(settings.ortho_scale);
             if (settings.equirectangular) {
                 const glm::mat3 rotation = panel.viewport->getRotationMatrix();
                 const glm::vec3 translation = panel.viewport->getTranslation();
@@ -1176,43 +1201,63 @@ namespace lfs::vis::gui {
             constexpr float kMinViewZ = -1e-4f;
             const glm::mat3 rotation = panel.viewport->getRotationMatrix();
             const glm::vec3 translation = panel.viewport->getTranslation();
-            glm::vec3 view_a = glm::transpose(rotation) * (world_a - translation);
-            glm::vec3 view_b = glm::transpose(rotation) * (world_b - translation);
+            const glm::vec3 view_a = glm::transpose(rotation) * (world_a - translation);
+            const glm::vec3 view_b = glm::transpose(rotation) * (world_b - translation);
 
-            if (view_a.z >= kMinViewZ && view_b.z >= kMinViewZ) {
+            const float cx = static_cast<float>(std::max(panel.render_size.x, 1)) * 0.5f;
+            const float cy = static_cast<float>(std::max(panel.render_size.y, 1)) * 0.5f;
+            const auto [fx, fy] = lfs::rendering::computePixelFocalLengths(
+                panel.render_size, settings.focal_length_mm);
+            if (settings.orthographic && (!std::isfinite(ortho_scale) || ortho_scale <= 0.0f)) {
                 return std::nullopt;
             }
 
-            const auto clip_to_near = [](glm::vec3& inside, glm::vec3& outside) {
-                const float denom = outside.z - inside.z;
-                if (std::abs(denom) <= 1e-8f) {
-                    return;
-                }
-                const float t = (-1e-4f - inside.z) / denom;
-                outside = glm::mix(inside, outside, std::clamp(t, 0.0f, 1.0f));
-                outside.z = -1e-4f;
+            struct ViewClipPlane {
+                glm::vec3 normal;
+                float offset;
             };
-            if (view_a.z >= kMinViewZ) {
-                clip_to_near(view_b, view_a);
+            const std::array<ViewClipPlane, 5> clip_planes =
+                settings.orthographic
+                    ? std::array<ViewClipPlane, 5>{{
+                          {{0.0f, 0.0f, -1.0f}, kMinViewZ},
+                          {{ortho_scale, 0.0f, 0.0f}, cx},
+                          {{-ortho_scale, 0.0f, 0.0f}, cx},
+                          {{0.0f, -ortho_scale, 0.0f}, cy},
+                          {{0.0f, ortho_scale, 0.0f}, cy},
+                      }}
+                    : std::array<ViewClipPlane, 5>{{
+                          {{0.0f, 0.0f, -1.0f}, kMinViewZ},
+                          {{fx, 0.0f, -cx}, 0.0f},
+                          {{-fx, 0.0f, -cx}, 0.0f},
+                          {{0.0f, -fy, -cy}, 0.0f},
+                          {{0.0f, fy, -cy}, 0.0f},
+                      }};
+
+            float t_enter = 0.0f;
+            float t_exit = 1.0f;
+            for (const auto& plane : clip_planes) {
+                const float distance_a = glm::dot(plane.normal, view_a) + plane.offset;
+                const float distance_b = glm::dot(plane.normal, view_b) + plane.offset;
+                if (distance_a < 0.0f && distance_b < 0.0f) {
+                    return std::nullopt;
+                }
+                if (distance_a < 0.0f) {
+                    t_enter = std::max(t_enter, distance_a / (distance_a - distance_b));
+                } else if (distance_b < 0.0f) {
+                    t_exit = std::min(t_exit, distance_a / (distance_a - distance_b));
+                }
             }
-            if (view_b.z >= kMinViewZ) {
-                clip_to_near(view_a, view_b);
+            if (t_enter >= t_exit) {
+                return std::nullopt;
             }
+            const glm::vec3 clipped_a = glm::mix(view_a, view_b, t_enter);
+            const glm::vec3 clipped_b = glm::mix(view_a, view_b, t_exit);
 
             const auto project_view = [&](const glm::vec3& view) -> std::optional<glm::vec2> {
-                const float width = static_cast<float>(std::max(panel.render_size.x, 1));
-                const float height = static_cast<float>(std::max(panel.render_size.y, 1));
-                const float cx = width * 0.5f;
-                const float cy = height * 0.5f;
                 if (settings.orthographic) {
-                    if (!std::isfinite(settings.ortho_scale) || settings.ortho_scale <= 0.0f) {
-                        return std::nullopt;
-                    }
-                    return glm::vec2(cx + view.x * settings.ortho_scale,
-                                     cy - view.y * settings.ortho_scale);
+                    return glm::vec2(cx + view.x * ortho_scale,
+                                     cy - view.y * ortho_scale);
                 }
-                const auto [fx, fy] = lfs::rendering::computePixelFocalLengths(
-                    panel.render_size, settings.focal_length_mm);
                 const float depth = -view.z;
                 if (depth <= 0.0f) {
                     return std::nullopt;
@@ -1221,16 +1266,16 @@ namespace lfs::vis::gui {
                                  cy - view.y * fy / depth);
             };
 
-            const auto pa = project_view(view_a);
-            const auto pb = project_view(view_b);
+            const auto pa = project_view(clipped_a);
+            const auto pb = project_view(clipped_b);
             if (!pa || !pb) {
                 return std::nullopt;
             }
             return ProjectedSegment{
                 .a = renderToPanelScreen(panel, *pa),
                 .b = renderToPanelScreen(panel, *pb),
-                .depth_a = -view_a.z,
-                .depth_b = -view_b.z,
+                .depth_a = -clipped_a.z,
+                .depth_b = -clipped_b.z,
             };
         }
 
@@ -1573,7 +1618,9 @@ namespace lfs::vis::gui {
                                        color,
                                        thickness,
                                        depth_aware ? projected->depth_a : 0.0f,
-                                       depth_aware ? projected->depth_b : 0.0f);
+                                       depth_aware ? projected->depth_b : 0.0f,
+                                       lfs::rendering::OverlayClipRect{.min = panel.pos,
+                                                                       .max = panel.pos + panel.size});
             }
         }
 
@@ -2608,7 +2655,6 @@ namespace lfs::vis::gui {
             hashCombine(hash, hashFloat(settings.focal_length_mm));
             hashCombine(hash, settings.orthographic);
             hashCombine(hash, settings.equirectangular);
-            hashCombine(hash, hashFloat(settings.ortho_scale));
             for (int i = 0; i < 3; ++i) {
                 hashCombine(hash, hashFloat(settings.train_camera_color[i]));
                 hashCombine(hash, hashFloat(settings.eval_camera_color[i]));
@@ -2843,6 +2889,12 @@ namespace lfs::vis::gui {
                 if (!panel.valid())
                     continue;
                 hashCombine(key.view_projection_hash, hashViewportPose(*panel.viewport));
+                if (settings.orthographic && !settings.equirectangular) {
+                    // Quantize relative scale so tiny valid overrides still track meaningful zoom.
+                    const float ortho_scale = panel.viewport->ortho_scale_override.value_or(settings.ortho_scale);
+                    hashCombine(key.view_projection_hash,
+                                hashQuantizedFloat(std::log2(ortho_scale), 1.0e-5f));
+                }
                 // The overlay is rasterized in screen space. Quantizing layout
                 // values removes sub-pixel churn from repeated UI layout solves
                 // without hiding a meaningful viewport-size change.
@@ -2917,6 +2969,7 @@ namespace lfs::vis::gui {
                     const auto& panel = panels[panel_index];
                     if (!panel.valid())
                         continue;
+                    const float ortho_scale = panel.viewport->ortho_scale_override.value_or(settings.ortho_scale);
                     const glm::mat3 rotation = panel.viewport->getRotationMatrix();
                     const glm::vec3 translation = panel.viewport->getTranslation();
                     const glm::mat3 world_to_panel_rotation = glm::transpose(rotation);
@@ -2980,10 +3033,10 @@ namespace lfs::vis::gui {
                         }
                         if (!settings.equirectangular && center_view.z + radius < -1e-4f) {
                             if (settings.orthographic &&
-                                std::isfinite(settings.ortho_scale) && settings.ortho_scale > 0.0f) {
-                                const float projected_radius = radius * settings.ortho_scale;
-                                const float projected_x = cx + center_view.x * settings.ortho_scale;
-                                const float projected_y = cy - center_view.y * settings.ortho_scale;
+                                std::isfinite(ortho_scale) && ortho_scale > 0.0f) {
+                                const float projected_radius = radius * ortho_scale;
+                                const float projected_x = cx + center_view.x * ortho_scale;
+                                const float projected_y = cy - center_view.y * ortho_scale;
                                 if (projected_x + projected_radius < 0.0f ||
                                     projected_x - projected_radius > width ||
                                     projected_y + projected_radius < 0.0f ||
@@ -3028,8 +3081,8 @@ namespace lfs::vis::gui {
                                     break;
                                 }
                                 const glm::vec2 projected = settings.orthographic
-                                                                ? glm::vec2(cx + view.x * settings.ortho_scale,
-                                                                            cy - view.y * settings.ortho_scale)
+                                                                ? glm::vec2(cx + view.x * ortho_scale,
+                                                                            cy - view.y * ortho_scale)
                                                                 : glm::vec2(cx + view.x * fx / -view.z,
                                                                             cy - view.y * fy / -view.z);
                                 screen_points[corner] = renderToPanelScreen(panel, projected);
@@ -3068,8 +3121,8 @@ namespace lfs::vis::gui {
                             .viewport_pos = panel.pos,
                             .viewport_size = panel.size,
                             .render_size = glm::vec2(panel.render_size),
-                            .focal_x = settings.orthographic ? settings.ortho_scale : fx,
-                            .focal_y = settings.orthographic ? settings.ortho_scale : fy,
+                            .focal_x = settings.orthographic ? ortho_scale : fx,
+                            .focal_y = settings.orthographic ? ortho_scale : fy,
                             .orthographic = settings.orthographic,
                             .equirectangular = settings.equirectangular,
                             .first_instance = first_instance,
@@ -3254,25 +3307,13 @@ namespace lfs::vis::gui {
                 if (!scene_state || !scene_manager)
                     return true;
                 const core::NodeId selected_id = scene_manager->getSelectedNodeCropBoxId();
-                if (selected_id == core::NULL_NODE)
-                    return !gizmo.cropbox_affects_render;
-                for (const auto& cb : scene_state->cropboxes) {
-                    if (cb.node_id == selected_id)
-                        return cb.effectively_visible;
-                }
-                return false;
+                return activeVolumeGuideVisible(gizmo.cropbox_affects_render, selected_id, scene_state->cropboxes);
             };
             const auto selected_ellipsoid_is_visible = [&]() {
                 if (!scene_state || !scene_manager)
                     return true;
                 const core::NodeId selected_id = scene_manager->getSelectedNodeEllipsoidId();
-                if (selected_id == core::NULL_NODE)
-                    return !gizmo.ellipsoid_affects_render;
-                for (const auto& el : scene_state->ellipsoids) {
-                    if (el.node_id == selected_id)
-                        return el.effectively_visible;
-                }
-                return false;
+                return activeVolumeGuideVisible(gizmo.ellipsoid_affects_render, selected_id, scene_state->ellipsoids);
             };
 
             if (gizmo.cropbox_active && selected_cropbox_is_visible()) {
@@ -3345,7 +3386,7 @@ namespace lfs::vis::gui {
                 panel.render_size,
                 settings.focal_length_mm,
                 settings.orthographic,
-                settings.ortho_scale,
+                panel.viewport->ortho_scale_override.value_or(settings.ortho_scale),
                 lfs::rendering::DEFAULT_NEAR_PLANE,
                 settings.depth_clip_enabled ? settings.depth_clip_far : lfs::rendering::DEFAULT_FAR_PLANE);
             const glm::vec4 clip = projection * view * glm::vec4(pivot_world, 1.0f);
@@ -4559,7 +4600,7 @@ namespace lfs::vis::gui {
             viewer_->getRenderingManager()->setViewportResizeActive(true);
             int ww = 0;
             int wh = 0;
-            SDL_GetWindowSize(viewer_->getWindow(), &ww, &wh);
+            SDL_GetWindowSizeInPixels(viewer_->getWindow(), &ww, &wh);
             ScreenState ss;
             ss.work_pos = {0.0f, 0.0f};
             ss.work_size = {static_cast<float>(ww), static_cast<float>(wh)};
@@ -5245,7 +5286,7 @@ namespace lfs::vis::gui {
                         panel.render_size,
                         settings.focal_length_mm,
                         settings.orthographic,
-                        settings.ortho_scale,
+                        panel.viewport->ortho_scale_override.value_or(settings.ortho_scale),
                         lfs::rendering::DEFAULT_NEAR_PLANE,
                         settings.depth_clip_enabled ? settings.depth_clip_far : lfs::rendering::DEFAULT_FAR_PLANE);
                     VulkanViewportGridOverlay grid{};
@@ -5506,16 +5547,9 @@ namespace lfs::vis::gui {
             return;
         }
 
-        const auto now = std::chrono::steady_clock::now();
-        const auto cooldown_ms =
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                ui_toggle_next_allowed_at_ > now ? ui_toggle_next_allowed_at_ - now
-                                                 : std::chrono::steady_clock::duration::zero())
-                .count();
-        LOG_DEBUG("Request UI visibility transition: pending={}, ui_hidden={}, cooldown_remaining_ms={}",
+        LOG_DEBUG("Request UI visibility transition: pending={}, ui_hidden={}",
                   ui_toggle_pending_,
-                  ui_hidden_,
-                  cooldown_ms);
+                  ui_hidden_);
         if (ui_toggle_pending_) {
             wm->wakeEventLoop();
             return;
@@ -5526,7 +5560,7 @@ namespace lfs::vis::gui {
     }
 
     void GuiManager::updateUiVisibilityTransition() {
-        if (!ui_toggle_pending_) {
+        if (!ui_toggle_pending_ || ui_visibility_resize_active_) {
             return;
         }
 
@@ -5537,32 +5571,13 @@ namespace lfs::vis::gui {
         }
 
         const auto now = std::chrono::steady_clock::now();
-        if (now < ui_toggle_next_allowed_at_) {
-            return;
-        }
-
         ui_toggle_pending_ = false;
-        // This is a viewport-layout resize, not a window-mode transition. Keep
-        // training on the normal non-blocking viewer path: Vulkan work is still
-        // drained below and the renderer's resize contract quiesces/recreates its
-        // output without changing the training schedule.
-        beginInteractiveTransitionGuard(InteractiveTransitionTrainingPolicy::KeepRunning);
-        if (!drainVulkanFramesForInteractiveTransition(*wm, "UI visibility")) {
-            ui_toggle_pending_ = true;
-            ui_toggle_next_allowed_at_ = now + kInteractiveTrainingToggleMinInterval;
-            LOG_WARN("UI visibility transition deferred after Vulkan drain failure: next_retry_ms={}, guard_kept_active=true, guard_remaining_ms={}",
-                     kInteractiveTrainingToggleMinInterval.count(),
-                     std::chrono::duration_cast<std::chrono::milliseconds>(
-                         interactive_transition_guard_until_ > std::chrono::steady_clock::now()
-                             ? interactive_transition_guard_until_ - std::chrono::steady_clock::now()
-                             : std::chrono::steady_clock::duration::zero())
-                         .count());
-            return;
-        }
-
-        auto* const trainer = viewer_ ? viewer_->getTrainerManager() : nullptr;
-        const bool training_active = trainer && trainer->isRunning();
+        // UI visibility only resizes renderer output. Each renderer already
+        // retires its image consumers before replacing that output, so do not
+        // drain all GUI frames or inherit fullscreen's training/cooldown guard.
+        ui_visibility_deadline_ = now + kInteractiveTransitionGuardDuration;
         ui_visibility_target_hidden_ = !ui_hidden_;
+        ui_visibility_target_ready_ = false;
         if (auto* const rendering = viewer_->getRenderingManager()) {
             // Hiding the editor chrome changes the viewport extent without an SDL
             // window-resize event. Use the same begin/end resize contract as dock
@@ -5592,6 +5607,11 @@ namespace lfs::vis::gui {
                     ui_visibility_target_layout_.size.x > 0.0f &&
                     ui_visibility_target_layout_.size.y > 0.0f;
             }
+            // Publishing a target extent alone does not request a scene frame.
+            // An idle viewer must render it immediately, before the GUI can
+            // atomically commit the new chrome layout and matching image.
+            rendering->markDirty(DirtyFlag::VIEWPORT, FrameReason::ViewportResize,
+                                 "ui_visibility");
         }
 
         if (!ui_visibility_target_ready_) {
@@ -5601,16 +5621,9 @@ namespace lfs::vis::gui {
             ui_visibility_layout_committed_ = true;
         }
 
-        applyInteractiveTransitionCooldown(ui_toggle_next_allowed_at_,
-                                           std::chrono::steady_clock::now(),
-                                           training_active);
-        LOG_DEBUG("UI visibility transition prepared: target_hidden={}, committed={}, training_active={}, next_allowed_in_ms={}",
+        LOG_DEBUG("UI visibility transition prepared: target_hidden={}, committed={}",
                   ui_visibility_target_hidden_,
-                  ui_visibility_layout_committed_,
-                  training_active,
-                  (training_active ? kInteractiveTrainingToggleMinInterval
-                                   : kInteractiveIdleToggleMinInterval)
-                      .count());
+                  ui_visibility_layout_committed_);
     }
 
     void GuiManager::queueFullscreenToggle() {
@@ -5751,6 +5764,19 @@ namespace lfs::vis::gui {
 
     void GuiManager::updateInteractiveTransitionGuard() {
         const auto now = std::chrono::steady_clock::now();
+        if (ui_visibility_resize_active_ &&
+            (ui_visibility_layout_committed_ || now >= ui_visibility_deadline_)) {
+            if (ui_visibility_target_ready_ && !ui_visibility_layout_committed_) {
+                // Preserve the user's request even if training cannot supply a
+                // matching frame before the independent UI resize deadline.
+                commitUiVisibilityTransition(false);
+            }
+            ui_visibility_resize_active_ = false;
+            ui_visibility_layout_committed_ = false;
+            if (auto* const rendering = viewer_ ? viewer_->getRenderingManager() : nullptr) {
+                rendering->setViewportResizeActive(false);
+            }
+        }
         if (interactive_transition_pause_pending_) {
             auto* const trainer = viewer_ ? viewer_->getTrainerManager() : nullptr;
             if (trainer && trainer->isRunning() && !trainer->isPaused()) {
@@ -5761,21 +5787,6 @@ namespace lfs::vis::gui {
         }
         if (now < interactive_transition_guard_until_) {
             return;
-        }
-
-        if (ui_visibility_resize_active_) {
-            if (ui_visibility_target_ready_ && !ui_visibility_layout_committed_) {
-                // Do not silently discard a user toggle if rendering cannot
-                // produce a matching frame before the guard expires. Commit the
-                // requested layout and let the still-dirty scene render replace
-                // the cached image on its next regular non-blocking frame.
-                commitUiVisibilityTransition(false);
-            }
-            ui_visibility_resize_active_ = false;
-            ui_visibility_layout_committed_ = false;
-            if (auto* const rendering = viewer_ ? viewer_->getRenderingManager() : nullptr) {
-                rendering->setViewportResizeActive(false);
-            }
         }
 
         endInteractiveTransitionGuard();
@@ -7642,7 +7653,7 @@ namespace lfs::vis::gui {
                                 world_point,
                                 render_settings.focal_length_mm,
                                 render_settings.orthographic,
-                                render_settings.ortho_scale);
+                                projection_viewport.ortho_scale_override.value_or(render_settings.ortho_scale));
                             if (!projected) {
                                 all_visible = false;
                                 break;
@@ -8340,6 +8351,11 @@ namespace lfs::vis::gui {
             return true;
         }
 
+        // Gizmo hover is refreshed only when the gizmo is drawn. Without a frame,
+        // a pointer that left the gizmo keeps claiming the next viewport press.
+        if (isTransformGizmoOverOrUsing())
+            return true;
+
         if (!guiFocusState().want_capture_mouse && isPositionInViewport(mouse_x, mouse_y)) {
             if (auto* const sel = viewer_ ? viewer_->getSelectionTool() : nullptr; sel && sel->isEnabled()) {
                 return selectionCursorNeedsRender(mouse_x, mouse_y);
@@ -8425,7 +8441,7 @@ namespace lfs::vis::gui {
         }
         if (ui_visibility_resize_active_)
             return;
-        const auto size = viewer_->getWindowManager()->getWindowSize();
+        const auto size = viewer_->getWindowManager()->getFramebufferSize();
         const float menu_h = rml_menu_bar_.barHeight();
         const float status_h = PanelLayoutManager::STATUS_BAR_HEIGHT * current_ui_scale_;
         const ScreenState screen{
@@ -8496,7 +8512,7 @@ namespace lfs::vis::gui {
         int window_w = 0;
         int window_h = 0;
         if (viewer_ && viewer_->getWindow()) {
-            SDL_GetWindowSize(viewer_->getWindow(), &window_w, &window_h);
+            SDL_GetWindowSizeInPixels(viewer_->getWindow(), &window_w, &window_h);
         }
         const float work_w = static_cast<float>(window_w);
         const float work_h = static_cast<float>(window_h);
@@ -8594,8 +8610,7 @@ namespace lfs::vis::gui {
                 rendering->markDirty(DirtyFlag::OVERLAY, lfs::vis::FrameReason::Overlay);
             return true;
         }
-        const bool ui_toggle_due =
-            ui_toggle_pending_ && now >= ui_toggle_next_allowed_at_;
+        const bool ui_toggle_due = ui_toggle_pending_ || ui_visibility_resize_active_;
         const bool fullscreen_toggle_due =
             fullscreen_toggle_pending_ && now >= fullscreen_toggle_next_allowed_at_;
         if (ui_toggle_due || fullscreen_toggle_due || interactive_transition_resume_training_ ||
@@ -8655,7 +8670,7 @@ namespace lfs::vis::gui {
             result += source;
         };
 
-        add(ui_toggle_pending_ && now >= ui_toggle_next_allowed_at_, "ui_toggle");
+        add(ui_toggle_pending_ || ui_visibility_resize_active_, "ui_visibility");
         add(cameraThumbnailRefreshDue(now), "camera_thumbnails");
         add(fullscreen_toggle_pending_ && now >= fullscreen_toggle_next_allowed_at_,
             "fullscreen_toggle");

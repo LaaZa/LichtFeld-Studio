@@ -21,6 +21,7 @@
 #include "gui/rmlui/rml_input_utils.hpp"
 #include "gui/rmlui/rml_text_input_handler.hpp"
 #include "gui/rmlui/rmlui_system_interface.hpp"
+#include "input/sdl_coordinate_utils.hpp"
 #include "internal/resource_paths.hpp"
 #include "python/python_runtime.hpp"
 
@@ -1051,7 +1052,8 @@ namespace lfs::vis::gui {
         }
     }
 
-    RmlUIManager::InputDispatchResult RmlUIManager::dispatchInputEvent(const SDL_Event& event) {
+    RmlUIManager::InputDispatchResult RmlUIManager::dispatchInputEvent(const SDL_Event& native_event) {
+        const SDL_Event event = input::pointerEventInPixels(native_event, window_);
         flushInputLifecycle();
         input_dispatch_active_ = true;
         struct FinishDispatch {

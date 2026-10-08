@@ -45,6 +45,7 @@
 #include "window/vulkan_context.hpp"
 #include "window/window_manager.hpp"
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cuda_runtime.h>
 #include <format>
@@ -197,6 +198,101 @@ namespace lfs::vis {
                                                            std::move(before), std::move(after)));
         }
 
+        // Keep exact resident values on the CPU: reflecting again is not an
+        // inverse in floating point, and quantized SH must retain its codes/bounds.
+        class MirrorUndoEntry final : public op::UndoEntry {
+        public:
+            explicit MirrorUndoEntry(core::Scene& scene) : scene_(scene) {}
+
+            void captureBefore(const core::SceneNode& node) {
+                states_.push_back(capture(node));
+            }
+
+            void undo() override { apply(); }
+            void redo() override { apply(); }
+            [[nodiscard]] std::string name() const override { return "Mirror"; }
+            [[nodiscard]] DirtyMask dirtyFlags() const override { return DirtyFlag::SPLATS; }
+            [[nodiscard]] size_t estimatedBytes() const override {
+                size_t bytes = 0;
+                for (const auto& state : states_)
+                    for (const auto& field : state.fields)
+                        bytes += field.is_valid() ? field.bytes() : 0;
+                return bytes;
+            }
+
+        private:
+            struct State {
+                core::Uuid uuid;
+                size_t count;
+                int degree;
+                bool payload_diverged;
+                std::array<core::Tensor, 4> fields;
+                std::array<size_t, 4> capacities;
+            };
+
+            static auto fields(core::SplatData& model) {
+                return std::array<core::Tensor*, 4>{&model.means_raw(), &model.rotation_raw(),
+                                                    &model.shN_raw(), &model.shN_value_bounds()};
+            }
+
+            static State capture(const core::SceneNode& node) {
+                State state{.uuid = node.uuid,
+                            .count = static_cast<size_t>(node.model->size()),
+                            .degree = node.model->get_max_sh_degree(),
+                            .payload_diverged = node.payload_diverged,
+                            .fields = {},
+                            .capacities = {}};
+                const auto tensors = fields(*node.model);
+                for (size_t i = 0; i < tensors.size(); ++i) {
+                    if (tensors[i]->is_valid()) {
+                        state.fields[i] = tensors[i]->to_pageable_host();
+                        state.capacities[i] = tensors[i]->capacity();
+                    }
+                }
+                return state;
+            }
+
+            void apply() {
+                // Validate all targets before changing any node. UUIDs survive rename.
+                for (const auto& state : states_) {
+                    const auto* node = scene_.getNodeByUuid(state.uuid);
+                    if (!node || !node->model || static_cast<size_t>(node->model->size()) != state.count ||
+                        node->model->get_max_sh_degree() != state.degree)
+                        throw op::HistoryStaleEntryError("Mirror target topology changed");
+                }
+                std::vector<State> current;
+                current.reserve(states_.size());
+                for (const auto& state : states_)
+                    current.push_back(capture(*scene_.getNodeByUuid(state.uuid)));
+
+                static constexpr std::array<const char*, 4> NAMES{
+                    "SplatData.means", "SplatData.rotation", "SplatData.shN", "SplatData.shN_value_bounds"};
+                for (const auto& state : states_) {
+                    auto& node = *scene_.getNodeByUuid(state.uuid);
+                    auto& model = *node.model;
+                    const auto targets = fields(model);
+                    for (size_t i = 0; i < targets.size(); ++i) {
+                        auto& target = *targets[i];
+                        const auto& saved = state.fields[i];
+                        if (!saved.is_valid()) {
+                            target = {};
+                            continue;
+                        }
+                        if (!target.is_valid() || target.shape() != saved.shape() || target.dtype() != saved.dtype()) {
+                            target = model.allocate_named_param(saved.shape(), state.capacities[i], saved.dtype(), NAMES[i]);
+                        }
+                        target.copy_from(saved);
+                    }
+                    node.payload_diverged = state.payload_diverged;
+                }
+                states_ = std::move(current);
+                scene_.notifyMutation(core::Scene::MutationType::MODEL_CHANGED);
+            }
+
+            core::Scene& scene_;
+            std::vector<State> states_;
+        };
+
         void retireSplatModelAsync(std::shared_ptr<const core::SplatData> model) {
             if (!model) {
                 return;
@@ -332,15 +428,6 @@ namespace lfs::vis {
             for (const auto child_id : node->children) {
                 collectSubtreeUuids(scene, child_id, result);
             }
-        }
-
-        [[nodiscard]] bool hasActiveSelectionFilter(const RenderingManager* const rendering_manager) {
-            if (!rendering_manager) {
-                return false;
-            }
-
-            const auto settings = rendering_manager->getSettings();
-            return settings.depth_filter_enabled || settings.crop_filter_for_selection;
         }
 
         [[nodiscard]] SelectionMode selectionModeFromString(const std::string& mode) {
@@ -481,6 +568,11 @@ namespace lfs::vis {
             if (auto* rendering = services().renderingOrNull())
                 rendering->markDirty(DirtyFlag::SPLATS | DirtyFlag::MESH | DirtyFlag::OVERLAY,
                                      FrameReason::SceneChange, "scene_cache");
+        });
+        scene_.setTransformInvalidationCallback([] {
+            if (auto* rendering = services().renderingOrNull())
+                rendering->markDirty(DirtyFlag::MESH | DirtyFlag::OVERLAY,
+                                     FrameReason::SceneChange, "scene_transform");
         });
         core::prop::set_undo_callback(
             [](const std::string& property_path,
@@ -1975,8 +2067,6 @@ namespace lfs::vis {
 
         selection_.selectNodes(ids);
         python::invalidate_poll_caches(1);
-        if (services().renderingOrNull())
-            services().renderingOrNull()->triggerSelectionFlash();
     }
 
     void SceneManager::addToSelection(const std::string& name) {
@@ -1991,8 +2081,6 @@ namespace lfs::vis {
             return;
         selection_.addToSelection(id);
         python::invalidate_poll_caches(1);
-        if (services().renderingOrNull())
-            services().renderingOrNull()->triggerSelectionFlash();
     }
 
     void SceneManager::removeFromSelection(const std::string& name) {
@@ -2007,8 +2095,6 @@ namespace lfs::vis {
             return;
         selection_.removeFromSelection(id);
         python::invalidate_poll_caches(1);
-        if (services().renderingOrNull())
-            services().renderingOrNull()->triggerSelectionFlash();
     }
 
     void SceneManager::clearSelection() {
@@ -2592,7 +2678,7 @@ namespace lfs::vis {
         const auto* node = scene_.getNode(name);
         if (!node)
             return false;
-        if (static_cast<bool>(node->locked)) {
+        if (scene_.isNodeEffectivelyLocked(node->id)) {
             LOG_WARN("Cannot transform '{}': node is locked", name);
             return false;
         }
@@ -5434,10 +5520,22 @@ namespace lfs::vis {
             std::shared_lock slock(selection_.mutex());
             const auto& sel_ids = selection_.selectedNodeIds();
             nodes.reserve(sel_ids.size());
-            for (const auto id : sel_ids) {
-                auto* n = scene_.getNodeById(id);
-                if (n && n->type == core::NodeType::SPLAT && n->model && !static_cast<bool>(n->locked))
-                    nodes.push_back(n);
+            std::vector<core::NodeId> pending(sel_ids.begin(), sel_ids.end());
+            std::unordered_set<core::NodeId> visited;
+            while (!pending.empty()) {
+                const auto id = pending.back();
+                pending.pop_back();
+                if (!visited.insert(id).second)
+                    continue;
+                auto* node = scene_.getNodeById(id);
+                if (!node || scene_.isNodeEffectivelyLocked(node->id))
+                    continue;
+                if (node->type == core::NodeType::SPLAT && node->model)
+                    nodes.push_back(node);
+                else if (node->type == core::NodeType::CROPBOX || node->type == core::NodeType::ELLIPSOID)
+                    pending.push_back(node->parent_id);
+                else
+                    pending.insert(pending.end(), node->children.begin(), node->children.end());
             }
         }
 
@@ -5454,6 +5552,7 @@ namespace lfs::vis {
                                    static_cast<size_t>(scene_mask->size(0)) == nodes[0]->model->size();
 
         size_t total_count = 0;
+        auto history = std::make_unique<MirrorUndoEntry>(scene_);
 
         for (auto* node : nodes) {
             auto& model = *node->model;
@@ -5472,6 +5571,7 @@ namespace lfs::vis {
             }
             total_count += count;
 
+            history->captureBefore(*node);
             const auto center = lfs::core::compute_selection_center(model, *mask);
             lfs::core::mirror_gaussians(model, *mask, axis, center);
             scene_.markPayloadDiverged(node->id);
@@ -5483,6 +5583,7 @@ namespace lfs::vis {
         }
 
         scene_.notifyMutation(core::Scene::MutationType::MODEL_CHANGED);
+        op::undoHistory().push(std::move(history));
 
         static constexpr const char* AXIS_NAMES[] = {"X", "Y", "Z"};
         LOG_INFO("Mirrored {} gaussians ({} nodes) along {} axis", total_count, nodes.size(),
@@ -6067,6 +6168,16 @@ namespace lfs::vis {
             return result;
         }
 
+        if (graph_before && !plan->consolidated && plan->partial_slices.empty()) {
+            pushSceneGraphHistoryEntry(*this,
+                                       "Delete Node",
+                                       std::move(*graph_before),
+                                       {},
+                                       history_options);
+            transaction.commit();
+            return {};
+        }
+
         entry->captureAfter();
         op::pushSceneSnapshotIfChanged(std::move(entry));
         if (graph_before) {
@@ -6091,9 +6202,7 @@ namespace lfs::vis {
 
     void SceneManager::invertSelection() {
         auto* rendering_manager = services().renderingOrNull();
-        if (selection_service_ &&
-            rendering_manager &&
-            hasActiveSelectionFilter(rendering_manager)) {
+        if (selection_service_ && rendering_manager) {
             (void)selection_service_->invertFiltered();
             return;
         }
@@ -6163,9 +6272,7 @@ namespace lfs::vis {
         const bool is_selection_tool = (tool == ToolType::Selection);
         auto* rendering_manager = services().renderingOrNull();
 
-        if (selection_service_ &&
-            rendering_manager &&
-            hasActiveSelectionFilter(rendering_manager)) {
+        if (is_selection_tool && selection_service_ && rendering_manager) {
             (void)selection_service_->selectAllFiltered();
             return;
         }
