@@ -77,6 +77,7 @@ BOOL_PROPS = (
     "invert_masks",
     "use_alpha_as_mask",
     "use_depth_loss",
+    "depth_auto_generate",
     "use_normal_loss",
     "normal_auto_generate",
     "enable_sparsity",
@@ -149,22 +150,15 @@ BASIC_RUNS = (
     _run(
         "basic_live_start",
         "mask_mode",
-    ),
-    _run(
-        "basic_depth_toggle",
         "use_depth_loss",
-        disabled_condition_id="depth_normal_disabled",
     ),
     _run(
         "basic_depth_weight",
+        "depth_auto_generate",
         "depth_loss_weight",
         visibility_condition_id="dep_depth_loss",
     ),
-    _run(
-        "basic_normal_toggle",
-        "use_normal_loss",
-        disabled_condition_id="depth_normal_disabled",
-    ),
+    _run("basic_normal_toggle", "use_normal_loss"),
     _run(
         "basic_normal_weights",
         "normal_auto_generate",
@@ -819,6 +813,21 @@ class SectionBinding:
                 return False
             if value not in {int(item["value"]) for item in row["items"]}:
                 return False
+            try:
+                current = int(_params_value(self._params(), prop_id))
+            except (
+                AttributeError,
+                KeyError,
+                OverflowError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+            ):
+                return False
+            # Rebuilding a restored row can echo its existing selection.
+            # Only a different value is a parameter edit.
+            if value == current:
+                return True
         else:
             return False
         updated = self._write_value(prop_id, value)

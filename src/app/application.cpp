@@ -94,14 +94,14 @@ namespace lfs::app {
         };
 
         // Headless runs train into the project they were started from unless
-        // -o redirects the result to a fresh project.licht.
+        // -o redirects the result to a fresh project file in the output folder.
         [[nodiscard]] std::filesystem::path headless_project_save_destination(
             const core::param::TrainingParameters& cli_params,
             const std::filesystem::path& source) {
             if (!cli_params.dataset.output_path_explicit)
                 return source;
 
-            const auto destination = cli_params.dataset.output_path / "project.licht";
+            const auto destination = cli_params.dataset.project_file();
             LOG_INFO("Headless project destination: {}",
                      core::path_to_utf8(destination));
             return destination;
@@ -117,7 +117,7 @@ namespace lfs::app {
         }
 
         // Empty for a plain dataset-folder run, which keeps the default
-        // output_path/project.licht destination.
+        // project file destination in the output folder.
         [[nodiscard]] std::filesystem::path headless_dataset_project_destination(
             const core::param::TrainingParameters& params) {
             if (!params.dataset_project)
@@ -1105,8 +1105,6 @@ namespace lfs::app {
                     if (!export_and_shutdown(trainer, with_export_folder(*params, ckpt_params_result->dataset.output_path)))
                         return 1;
                 } else {
-                    LOG_INFO("Starting headless training...");
-
                     if (const auto result = training::loadTrainingDataIntoScene(*params, scene); !result) {
                         LOG_ERROR("Failed to load training data: {}", result.error());
                         return 1;
@@ -1155,8 +1153,6 @@ namespace lfs::app {
                         return 1;
                 }
 
-                LOG_INFO("Headless training {}",
-                         coordinator.interrupted() ? "stopped by user" : "completed");
                 core::teardown_gpu_before_exit();
                 core::mark_clean_exit();
                 core::flush_and_exit(0);
@@ -1305,7 +1301,7 @@ namespace lfs::app {
                 return 1;
             }
 
-            const float duration = timeline.duration();
+            const float duration = timeline.clipDuration();
             const int total_frames = static_cast<int>(std::ceil(duration * cfg.fps)) + 1;
             LOG_INFO("Rendering {} frame(s) ({:.2f}s @ {}fps) from {} to {}",
                      total_frames, duration, cfg.fps,
@@ -1461,7 +1457,6 @@ namespace lfs::app {
         }
 
         void warmupCudaAsync() {
-            LOG_INFO("Initializing CUDA (async)...");
             cudaWarmupFuture() = std::async(std::launch::async, [] {
                 auto& profiler = lfs::diagnostics::VramProfiler::instance();
                 // NVML is intentionally first touched here, after the window
@@ -1718,6 +1713,7 @@ namespace lfs::app {
                         .request_logging = config.request_logging,
                     });
                     return true; },
+                .mcp_port_override = mcp_port_override,
             });
             viewer->setShutdownRequestedCallback([&mcp_http]() {
                 vis::setRuntimeServiceControls({});

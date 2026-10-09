@@ -23,6 +23,7 @@
 #include <format>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <source_location>
 #include <span>
 #include <string>
@@ -482,6 +483,7 @@ namespace lfs::vis {
         VmaAllocator allocator_ = VK_NULL_HANDLE;
         VkPipelineCache pipeline_cache_ = VK_NULL_HANDLE;
         std::mutex pipeline_cache_mutex_;
+        std::size_t saved_pipeline_cache_hash_ = 0;
         VkQueue graphics_queue_ = VK_NULL_HANDLE;
         VkQueue present_queue_ = VK_NULL_HANDLE;
         uint32_t graphics_queue_family_ = 0;
@@ -587,6 +589,7 @@ namespace lfs::vis {
         bool sparse_binding_enabled_ = false;
         bool buffer_device_address_enabled_ = false;
         std::mutex graphics_queue_mutex_;
+        std::shared_mutex device_queue_access_mutex_;
         bool swapchain_maintenance1_enabled_ = false;
         bool swapchain_present_scaling_enabled_ = false;
         bool has_push_descriptor_ = false;

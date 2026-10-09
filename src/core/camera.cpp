@@ -106,6 +106,12 @@ namespace lfs::core {
             LOG_ERROR("Camera constructor: T tensor is invalid or empty");
             throw std::runtime_error("Camera constructor: T tensor is invalid or empty");
         }
+        // Cameras without lens distortion carry empty float32 coefficient tensors, as the
+        // project format requires. Coefficients passed by loaders are kept unchanged.
+        if (!_radial_distortion.is_valid())
+            _radial_distortion = Tensor::empty({0}, Device::CPU, DataType::Float32);
+        if (!_tangential_distortion.is_valid())
+            _tangential_distortion = Tensor::empty({0}, Device::CPU, DataType::Float32);
 
         // Compute world-to-view transform
         _world_view_transform = world_to_view(R, T);
@@ -554,6 +560,12 @@ namespace lfs::core {
         rebase_path_if_under(_mask_path, old_root, new_root);
         rebase_path_if_under(_depth_path, old_root, new_root);
         rebase_path_if_under(_normal_path, old_root, new_root);
+    }
+
+    void Camera::set_depth_path(std::filesystem::path path) {
+        _depth_path = std::move(path);
+        _depth_quantization_step = -1.0f;
+        release_depth_cache();
     }
 
     void Camera::set_normal_path(std::filesystem::path path) {

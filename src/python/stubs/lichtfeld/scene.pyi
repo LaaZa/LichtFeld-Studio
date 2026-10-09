@@ -501,11 +501,13 @@ class Scene:
         """
 
     def add_point_cloud(self, name: str, points: lichtfeld.Tensor, colors: lichtfeld.Tensor, parent: int = -1) -> int:
-        """Add a point cloud node from tensor data [N,3] positions and colors"""
+        """
+        Add a point cloud node from [N,3] positions and uint8 or float32 colors; other color dtypes raise ValueError
+        """
 
     def add_mesh(self, name: str, vertices: lichtfeld.Tensor, indices: lichtfeld.Tensor, colors: lichtfeld.Tensor | None = None, normals: lichtfeld.Tensor | None = None, parent: int = -1) -> int:
         """
-        Add a mesh node from [V,3] vertices, [F,3] face indices, optional [V,4] colors and [V,3] normals
+        Add a mesh node from [V,3] vertices, [F,3] face indices, optional [V,4] colors and [V,3] normals; invalid color shapes raise ValueError
         """
 
     def add_camera_group(self, name: str, parent: int, camera_count: int) -> int:
@@ -589,6 +591,11 @@ class Scene:
 
     def combined_model(self) -> SplatData | None:
         """Get the merged SplatData for all visible splats (None if empty)"""
+
+    def apply_crop_filter(self, mask: lichtfeld.Tensor) -> None:
+        """
+        Filter a combined-model CUDA bool mask in place by enabled render crop boxes and ellipsoids. Scene selection is unchanged.
+        """
 
     def training_model(self) -> SplatData | None:
         """Get the SplatData used for training (None if unavailable)"""

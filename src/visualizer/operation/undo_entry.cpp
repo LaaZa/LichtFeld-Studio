@@ -825,12 +825,18 @@ namespace lfs::vis::op {
             return snapshot;
         }
 
+        [[nodiscard]] bool isSequencerProjectionNode(const lfs::core::NodeType type) {
+            return type == lfs::core::NodeType::KEYFRAME ||
+                   type == lfs::core::NodeType::KEYFRAME_GROUP;
+        }
+
         SceneGraphNodeSnapshot captureNodeSnapshot(const SceneManager& scene_manager,
                                                    const lfs::core::SceneNode& node,
                                                    const SceneGraphCaptureMode mode,
                                                    const lfs::core::Scene::PerNodeSelectionSlices& selection_slices,
                                                    const std::unordered_set<lfs::core::Uuid>& payload_uuids,
-                                                   const bool capture_all_payloads) {
+                                                   const bool capture_all_payloads,
+                                                   const bool exclude_sequencer_projection) {
             SceneGraphNodeSnapshot snapshot;
             snapshot.uuid = node.uuid;
             snapshot.id = node.id;
@@ -897,10 +903,11 @@ namespace lfs::vis::op {
             }
 
             for (const auto child_id : node.children) {
-                if (const auto* child = scene_manager.getScene().getNodeById(child_id)) {
+                if (const auto* child = scene_manager.getScene().getNodeById(child_id);
+                    child && (!exclude_sequencer_projection || !isSequencerProjectionNode(child->type))) {
                     snapshot.children.push_back(
                         captureNodeSnapshot(scene_manager, *child, mode, selection_slices,
-                                            payload_uuids, capture_all_payloads));
+                                            payload_uuids, capture_all_payloads, exclude_sequencer_projection));
                 }
             }
 
@@ -1589,15 +1596,22 @@ namespace lfs::vis::op {
                     existing->depth_path.clear();
                 }
                 if (existing->parent_id != desired_parent) {
-                    const bool was_locked = existing->locked;
-                    existing->locked.setQuiet(false);
-                    (void)scene.moveNode(existing->id, desired_parent, -1);
-                    existing->locked.setQuiet(was_locked);
-                    existing = scene.getNodeByUuid(snapshot.uuid);
-                    if (!existing || existing->parent_id != desired_parent) {
-                        throw HistoryCorruptionError(
-                            "Failed to reparent existing scene node '" + snapshot.name + "'");
+                    const auto* destination = scene.getNodeById(desired_parent);
+                    if (destination && !lfs::core::isSceneNodeParentCompatible(destination->type, snapshot.type)) {
+                        throw HistoryCorruptionError("Cannot restore parent for scene node '" + snapshot.name + "'");
                     }
+                    for (const auto* ancestor = destination; ancestor; ancestor = scene.getNodeById(ancestor->parent_id)) {
+                        if (ancestor->id == existing->id)
+                            throw HistoryCorruptionError("Cannot restore cyclic parentage for scene node '" + snapshot.name + "'");
+                    }
+                    // History owns the destination local pose; replay must not invert
+                    // a possibly singular parent transform to recompute it.
+                    if (auto* parent = scene.getNodeById(existing->parent_id))
+                        std::erase(parent->children, existing->id);
+                    existing->parent_id = desired_parent;
+                    if (auto* parent = scene.getNodeById(desired_parent))
+                        parent->children.push_back(existing->id);
+                    scene.notifyMutation(lfs::core::Scene::MutationType::NODE_REPARENTED);
                 }
 
                 existing->local_transform.setQuiet(snapshot.local_transform);
@@ -1677,7 +1691,11 @@ namespace lfs::vis::op {
                         "Cannot restore children for missing scene node " + snapshot.uuid.to_string());
                 }
                 for (size_t i = 0; i < snapshot.children.size(); ++i) {
-                    moveForRestore(snapshot.children[i].uuid, parent->id, static_cast<int>(i));
+                    const auto& child = snapshot.children[i];
+                    moveForRestore(child.uuid, parent->id,
+                                   desired.scoped_topology && child.order_index >= 0
+                                       ? child.order_index
+                                       : static_cast<int>(i));
                 }
                 for (const auto& child : snapshot.children) {
                     self(self, child);
@@ -1738,11 +1756,6 @@ namespace lfs::vis::op {
             } else if (!selected_node_ids.empty()) {
                 scene_manager.selectNodesById(selected_node_ids);
             }
-        }
-
-        [[nodiscard]] bool isSequencerProjectionNode(const lfs::core::NodeType type) {
-            return type == lfs::core::NodeType::KEYFRAME ||
-                   type == lfs::core::NodeType::KEYFRAME_GROUP;
         }
 
         [[nodiscard]] SceneTopologyProof captureTopologyProof(
@@ -3453,7 +3466,9 @@ namespace lfs::vis::op {
         root_nodes.reserve(unique_ids.size());
         for (const auto id : unique_ids) {
             const auto* node = scene.getNodeById(id);
-            if (!node) {
+            // Sequencer projection nodes are rebuilt by camera-key history.
+            // Scoped scene edits must neither restore nor require their old UUIDs.
+            if (!node || (options.scoped_topology && isSequencerProjectionNode(node->type))) {
                 continue;
             }
 
@@ -3504,7 +3519,7 @@ namespace lfs::vis::op {
             assert(root);
             snapshot.roots.push_back(
                 captureNodeSnapshot(scene_manager, *root, options.mode, selection_slices,
-                                    payload_uuids, capture_all_payloads));
+                                    payload_uuids, capture_all_payloads, options.scoped_topology));
         }
 
         return snapshot;
@@ -3535,7 +3550,8 @@ namespace lfs::vis::op {
                 collectSnapshotUuids(root, desired_uuids);
             }
             for (const auto* node : scene_.getScene().getNodes()) {
-                if (node && !desired_uuids.contains(node->uuid)) {
+                if (node && !desired_uuids.contains(node->uuid) &&
+                    (!current.scoped_topology || !isSequencerProjectionNode(node->type))) {
                     uuids_to_remove.insert(node->uuid);
                 }
             }

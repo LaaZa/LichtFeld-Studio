@@ -12,6 +12,7 @@
 #include "core/logger.hpp"
 #include "core/memory_pressure.hpp"
 #include "core/path_utils.hpp"
+#include "core/scene_merge.hpp"
 #include "core/sh_value_quant.hpp"
 #include "core/sh_value_quant_kernels.hpp"
 #include "core/splat_data_transform.hpp"
@@ -26,6 +27,7 @@
 #include <cuda_runtime.h>
 #include <exception>
 #include <filesystem>
+#include <format>
 #include <functional>
 #include <glm/gtc/quaternion.hpp>
 #include <limits>
@@ -911,6 +913,16 @@ namespace lfs::core {
         return single_node_model_ ? single_node_model_ : cached_combined_.get();
     }
 
+    const lfs::core::SplatData* Scene::getCurrentCombinedModel() const {
+        waitForCombinedModelBuild();
+        if (combined_model_build_failure_ &&
+            combined_model_build_failure_->first == render_generation_.load(std::memory_order_acquire)) {
+            return nullptr;
+        }
+        rebuildModelCacheIfNeeded();
+        return single_node_model_ ? single_node_model_ : cached_combined_.get();
+    }
+
     bool Scene::hasPreparedCombinedModel() const {
         return peekCombinedModel() != nullptr;
     }
@@ -1061,6 +1073,15 @@ namespace lfs::core {
             return result;
         }
 
+        // LOD-tree models draw flat here, so they contribute their leaves: interior nodes are
+        // hidden and opacity decoded, with rows kept for selection and transform indices.
+        std::vector<std::shared_ptr<const SplatData>> models;
+        models.reserve(selected_inputs.size());
+        for (const auto* input : selected_inputs) {
+            const auto& tree = input->model->lod_tree;
+            models.push_back(tree && tree->has_tree() ? make_lod_leaf_view(*input->model) : input->model);
+        }
+
         const cudaStream_t build_stream = getCurrentCUDAStream();
         const auto order_input = [build_stream](const Tensor& tensor) {
             if (tensor.is_valid() && tensor.device() == Device::CUDA) {
@@ -1071,8 +1092,8 @@ namespace lfs::core {
         std::vector<size_t> cached_sizes;
         cached_sizes.reserve(selected_inputs.size());
         ModelStats stats{};
-        for (const auto* input : selected_inputs) {
-            const auto& model = *input->model;
+        for (const auto& model_ptr : models) {
+            const auto& model = *model_ptr;
             order_input(model.means_raw());
             order_input(model.sh0_raw());
             order_input(model.shN_raw());
@@ -1094,7 +1115,7 @@ namespace lfs::core {
             stats.total_scene_scale += model.get_scene_scale();
         }
 
-        const Device device = selected_inputs[0]->model->means_raw().device();
+        const Device device = models[0]->means_raw().device();
         constexpr int SH0_COEFFS = 1;
         const auto dst_layout_rest = sh_rest_coefficients_for_degree(stats.max_sh_degree);
         const size_t shN_swizzled_floats =
@@ -1119,14 +1140,14 @@ namespace lfs::core {
         // its full float aggregate. Float-only inputs need no decode workspace.
         constexpr size_t band_size = 65536;
         uint32_t decode_rest = 0;
-        for (const auto* input : selected_inputs)
-            if (input->model->shN_value_quantized())
-                decode_rest = std::max(decode_rest, static_cast<uint32_t>(input->model->max_sh_coeffs_rest()));
+        for (const auto& model : models)
+            if (model->shN_value_quantized())
+                decode_rest = std::max(decode_rest, static_cast<uint32_t>(model->max_sh_coeffs_rest()));
         const size_t band_floats = sh_swizzled_float_count(std::min(total, band_size), dst_layout_rest);
         const size_t decode_floats = decode_rest ? sh_swizzled_float_count(std::min(total, band_size), decode_rest) : 0;
         const bool banded_q16 = band_floats + decode_floats < shN_swizzled_floats && allocator && sh_value_quant::enabled() && dst_layout_rest > 0 &&
-                                std::all_of(selected_inputs.begin(), selected_inputs.end(), [](const auto* input) {
-                                    const auto& model = *input->model;
+                                std::all_of(models.begin(), models.end(), [](const auto& model_ptr) {
+                                    const auto& model = *model_ptr;
                                     return !model.shN_raw().is_valid() || model.shN_raw().numel() == 0 ||
                                            model.shN_raw().dtype() == DataType::Float32 || model.shN_value_quantized();
                                 });
@@ -1147,8 +1168,8 @@ namespace lfs::core {
                 if (const auto status = cudaMemsetAsync(band.data_ptr(), 0, band_floats * sizeof(float), build_stream); status != cudaSuccess)
                     throw std::runtime_error(cudaGetErrorString(status));
                 size_t source_begin = 0;
-                for (const auto* input : selected_inputs) {
-                    const auto& model = *input->model;
+                for (const auto& model_ptr : models) {
+                    const auto& model = *model_ptr;
                     const size_t source_end = source_begin + model.size();
                     const size_t overlap_begin = std::max(begin, source_begin);
                     const size_t overlap_end = std::min(begin + count, source_end);
@@ -1199,19 +1220,16 @@ namespace lfs::core {
         Tensor rotation = alloc_param(TensorShape({total, 4}), total, "SplatData.rotation");
 
         const bool has_any_deleted = std::any_of(
-            selected_inputs.begin(), selected_inputs.end(),
-            [](const CombinedModelBuildInput* input) {
-                return input->model->has_deleted_mask();
-            });
+            models.begin(), models.end(),
+            [](const auto& model) { return model->has_deleted_mask(); });
         Tensor deleted = has_any_deleted
                              ? Tensor::zeros({total}, device, DataType::Bool)
                              : Tensor();
         std::vector<int> transform_indices_data(total);
 
         size_t offset = 0;
-        for (size_t i = 0; i < selected_inputs.size(); ++i) {
-            const auto& input = *selected_inputs[i];
-            const auto& model = *input.model;
+        for (size_t i = 0; i < models.size(); ++i) {
+            const auto& model = *models[i];
             const size_t size = cached_sizes[i];
             std::fill(transform_indices_data.begin() + offset,
                       transform_indices_data.begin() + offset + size,
@@ -2474,6 +2492,16 @@ namespace lfs::core {
     std::shared_ptr<SplatData> Scene::SplatSnapshot::materialize() const {
         if (!data || row_offset > data->size() || row_count > data->size() - row_offset)
             throw std::runtime_error("Invalid scene snapshot range.");
+        if (data->lod_tree && data->lod_tree->has_tree()) {
+            if (row_offset != 0 || row_count != data->size())
+                throw std::runtime_error("An LOD model snapshot must cover the whole model.");
+            auto leaves = extract_lod_leaves(*data);
+            if (!leaves)
+                throw std::runtime_error(std::format("Cannot capture the LOD model: {}", leaves.error().detail()));
+            auto flat = std::make_shared<SplatData>(std::move(*leaves));
+            flat->set_active_sh_degree(std::clamp(active_sh_degree, 0, flat->get_max_sh_degree()));
+            return flat;
+        }
         if (row_offset == 0 && row_count == data->size() && active_sh_degree == data->get_active_sh_degree())
             return data;
         auto keep = Tensor::zeros_bool({static_cast<size_t>(data->size())}, data->means_raw().device());
@@ -3897,6 +3925,77 @@ namespace lfs::core {
         notifyMutation(MutationType::SELECTION_CHANGED);
     }
 
+    void Scene::clearUnlockedSelection() {
+        std::vector<uint8_t> locked_ids;
+        for (const auto& group : selection_groups_) {
+            if (group.locked)
+                locked_ids.push_back(group.id);
+        }
+        if (locked_ids.empty()) {
+            clearSelection();
+            return;
+        }
+
+        std::array<std::shared_ptr<lfs::core::Tensor>, 2>
+            selection_masks;
+        {
+            std::shared_lock lock(selection_mutex_);
+            selection_masks = {
+                selection_mask_,
+                point_cloud_selection_mask_,
+            };
+        }
+
+        std::array<std::shared_ptr<lfs::core::Tensor>, 2> kept_masks;
+        std::array<size_t, 2> kept_counts{};
+        for (std::size_t domain_index = 0;
+             domain_index < selection_masks.size();
+             ++domain_index) {
+            const auto& selection_mask =
+                selection_masks[domain_index];
+            if (!selection_mask || !selection_mask->is_valid()) {
+                continue;
+            }
+            const auto values = selection_mask->to(DataType::UInt8);
+            auto keep = values.eq(static_cast<float>(locked_ids.front()));
+            for (std::size_t i = 1; i < locked_ids.size(); ++i) {
+                keep = keep.logical_or(values.eq(static_cast<float>(locked_ids[i])));
+            }
+            kept_counts[domain_index] = keep.count_nonzero();
+            kept_masks[domain_index] =
+                std::make_shared<lfs::core::Tensor>(values.where(keep, Tensor::zeros_like(values)));
+        }
+
+        const size_t kept_count = kept_counts[0] + kept_counts[1];
+        if (kept_count == 0) {
+            clearSelection();
+            return;
+        }
+
+        {
+            std::unique_lock lock(selection_mutex_);
+            if (kept_masks[0])
+                selection_mask_ = kept_masks[0];
+            if (kept_masks[1])
+                point_cloud_selection_mask_ = kept_masks[1];
+            has_selection_ = kept_counts[0] > 0;
+            has_point_cloud_selection_ = kept_counts[1] > 0;
+            selected_count_ = kept_count;
+            selected_count_valid_ = true;
+        }
+
+        for (auto& group : selection_groups_) {
+            if (!group.locked)
+                group.count = 0;
+        }
+        selection_group_counts_dirty_ = true;
+        events::state::SelectionChanged{
+            .has_selection = true,
+            .count = static_cast<int>(std::min(kept_count, static_cast<size_t>(std::numeric_limits<int>::max())))}
+            .emit();
+        notifyMutation(MutationType::SELECTION_CHANGED);
+    }
+
     void Scene::resetSelectionState() {
         Transaction txn(*this);
         {
@@ -4838,7 +4937,12 @@ namespace lfs::core {
                 if (source_slice != selection_slices->end()) {
                     const auto* duplicated = getNodeById(new_id);
                     assert(duplicated && !duplicated->uuid.is_nil());
-                    auto cloned_slice = source_slice->second.clone();
+                    const auto& source_model = *getNodeById(src_id)->model;
+                    // Match the live-row order used by the model clone.
+                    auto cloned_slice = source_model.has_deleted_mask()
+                                            ? source_slice->second.index_select(
+                                                  0, source_model.deleted().logical_not().to(source_slice->second.device()))
+                                            : source_slice->second.clone();
                     const auto [slice_it, inserted] =
                         selection_slices->emplace(duplicated->uuid, std::move(cloned_slice));
                     (void)slice_it;
@@ -4892,20 +4996,21 @@ namespace lfs::core {
         const bool group_visible = group_node->visible;
         bool contains_locked_node = false;
         std::vector<std::pair<const lfs::core::SplatData*, glm::mat4>> splats;
-        const std::function<void(NodeId)> collect = [&](const NodeId id) {
+        const std::function<void(NodeId, const glm::mat4&)> collect = [&](const NodeId id, const glm::mat4& parent_transform) {
             const auto* const node = getNodeById(id);
             if (!node)
                 return;
+            const glm::mat4 transform = parent_transform * node->local_transform.get();
             contains_locked_node = contains_locked_node || static_cast<bool>(node->locked);
             if (node->type == NodeType::SPLAT && node->model) {
-                splats.emplace_back(node->model.get(), getWorldTransform(id));
+                splats.emplace_back(node->model.get(), transform);
             }
             for (const NodeId cid : node->children)
-                collect(cid);
+                collect(cid, transform);
         };
 
         const NodeId parent_id = group_node->parent_id;
-        collect(group_id);
+        collect(group_id, glm::mat4{1.f});
         if (contains_locked_node) {
             LOG_WARN("Cannot merge '{}': node is locked", group_name);
             return "";
@@ -4916,8 +5021,9 @@ namespace lfs::core {
             return "";
         }
 
+        const auto removal_plan = planGroupMergeRemoval(*this, group_id);
         Transaction txn(*this);
-        removeNode(group_name, false);
+        removeGroupForMerge(*this, removal_plan);
         const NodeId merged_id = addSplat(group_name, std::move(merged), parent_id);
         if (merged_id == NULL_NODE) {
             LOG_ERROR("Failed to add merged group '{}'", group_name);
@@ -4949,6 +5055,44 @@ namespace lfs::core {
 
         if (sh_degree_limit < -1 || sh_degree_limit > 3)
             throw std::invalid_argument("SH degree limit must be -1 or between 0 and 3.");
+
+        // Only the single-identity borrow keeps an LOD tree; every other result is flat, so LOD
+        // sources contribute their leaves with real opacity instead of interior nodes.
+        const auto has_lod_tree = [](const auto& entry) {
+            return entry.first->lod_tree && entry.first->lod_tree->has_tree();
+        };
+        const bool keeps_lod_tree = storage_mode == MergeStorageMode::BorrowSingleIdentity &&
+                                    splats.size() == 1 && splats.front().second == glm::mat4{1.0f} &&
+                                    !splats.front().first->has_deleted_mask();
+        if (!keeps_lod_tree && std::any_of(splats.begin(), splats.end(), has_lod_tree)) {
+            std::vector<lfs::core::SplatData> leaves;
+            leaves.reserve(splats.size());
+            std::vector<std::pair<const lfs::core::SplatData*, glm::mat4>> flat_splats;
+            flat_splats.reserve(splats.size());
+            for (const auto& entry : splats) {
+                if (!has_lod_tree(entry)) {
+                    flat_splats.push_back(entry);
+                    continue;
+                }
+                auto extracted = lfs::core::extract_lod_leaves(*entry.first);
+                if (!extracted) {
+                    LOG_ERROR("Cannot merge an LOD model: {}", extracted.error().detail());
+                    return nullptr;
+                }
+                if (extracted->size() == 0)
+                    continue;
+                leaves.push_back(std::move(*extracted));
+                flat_splats.emplace_back(&leaves.back(), entry.second);
+            }
+            if (flat_splats.empty())
+                return nullptr;
+            // A lone leaf set is already a private copy, so it can be borrowed.
+            const auto flat_mode = flat_splats.size() == 1 && !leaves.empty()
+                                       ? MergeStorageMode::BorrowSingleIdentity
+                                       : storage_mode;
+            return mergeSplatsWithTransforms(flat_splats, flat_mode, sh_degree_limit);
+        }
+
         const auto storage_degree = [sh_degree_limit](const lfs::core::SplatData& model) {
             return sh_degree_limit < 0 ? model.get_max_sh_degree()
                                        : std::min({sh_degree_limit, model.get_active_sh_degree(), model.get_max_sh_degree()});

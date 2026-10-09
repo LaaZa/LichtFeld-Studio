@@ -2261,7 +2261,7 @@ namespace lfs::vis {
         live_submit_callback_ = {};
         if (context_ && context_->device() != VK_NULL_HANDLE) {
             const VkDevice device = context_->device();
-            const VkResult idle_result = vkDeviceWaitIdle(device);
+            const VkResult idle_result = lfs::rendering::vk_device_wait_idle_synced(device);
             if (idle_result != VK_SUCCESS) {
                 LOG_ERROR("Vulkan: {}",
                           formatVkCheckFailure(
@@ -3774,8 +3774,6 @@ namespace lfs::vis {
                 "vksplat.scratch.arena.grow bytes={}MiB generation={} (stable address)",
                 shared_scratch_.bytes >> 20,
                 shared_scratch_.generation);
-            LOG_INFO("VkSplat shared scratch arena grew to {} MiB (stable address)",
-                     shared_scratch_.bytes >> 20);
             return {};
         }
 
@@ -3827,9 +3825,6 @@ namespace lfs::vis {
             shared_scratch_.bytes >> 20,
             reserve_bytes >> 20,
             shared_scratch_.generation);
-        LOG_INFO("VkSplat shared scratch arena: {} MiB committed, {} MiB reserved (grows in place)",
-                 shared_scratch_.bytes >> 20,
-                 reserve_bytes >> 20);
         return {};
     }
 
@@ -3880,8 +3875,6 @@ namespace lfs::vis {
             shared_scratch_.bytes >> 20,
             shared_scratch_.generation,
             shared_scratch_.imported_buffer.bound_chunks);
-        LOG_INFO("VkSplat shared scratch chunks bound after grow: {} MiB (no re-import)",
-                 shared_scratch_.bytes >> 20);
         return {};
     }
 
@@ -4530,12 +4523,11 @@ namespace lfs::vis {
         const bool transform_indices_enabled = hasTransformIndices(request.scene.transform_indices, num_splats);
 
         // Compare/split view and hidden nodes of a consolidated model restrict which
-        // scene nodes may draw via request.scene.node_visibility_mask. The per-node
-        // node_mask buffer (indexed by transform_indices) carries emphasis and this
-        // culling in separate bits, so hiding a node keeps unselected nodes dimmed.
+        // scene nodes may draw via request.scene.node_visibility_mask. Without
+        // per-splat indices every splat belongs to node 0. The node_mask buffer
+        // carries emphasis and culling in separate bits.
         const auto& node_visibility_mask = request.scene.node_visibility_mask;
         const bool node_visibility_restricts =
-            transform_indices_enabled &&
             std::any_of(node_visibility_mask.begin(), node_visibility_mask.end(),
                         [](const bool visible) { return !visible; });
         const auto& emphasized_node_mask = request.overlay.emphasis.emphasized_node_mask;
@@ -5285,12 +5277,6 @@ namespace lfs::vis {
             input_snapshot_changed &&
             matchesExceptDeletedMask(uploaded_input_snapshot, current_input_snapshot);
         const bool input_upload_requested = force_upload || input_snapshot_changed;
-        const bool first_q16_sh_enable =
-            input_snapshot_changed &&
-            uploaded_input_snapshot.valid() &&
-            uploaded_input_snapshot.active_sh_degree <= 0 &&
-            current_input_snapshot.active_sh_degree > 0 &&
-            current_input_snapshot.shn_q16;
 
         std::shared_ptr<VulkanExternalTensorStorage> means_storage, sh0_storage, shN_storage,
             shN_bounds_storage, rotations_storage, scaling_storage, opacity_storage, deleted_storage;
@@ -5365,19 +5351,6 @@ namespace lfs::vis {
             use_external_sh
                 ? external_layout
                 : (omit_layout_holder ? **omit_layout_holder : upload_layout);
-        if (first_q16_sh_enable) {
-            LOG_INFO(
-                "VkSplat first q16 SH enable: active_sh={} max_sh={} N={} gen={} "
-                "n_cells={} codes={} bounds={} (generation_checked={})",
-                current_input_snapshot.active_sh_degree,
-                current_input_snapshot.max_sh_degree,
-                current_input_snapshot.count,
-                current_input_snapshot.exportable_generation,
-                q16_bind.n_cells_per_prim,
-                static_cast<const void*>(q16_bind.codes),
-                static_cast<const void*>(q16_bind.bounds),
-                q16_bind.generation_checked);
-        }
 
         std::vector<std::string> input_copy_reasons;
         const auto note_missing_storage =

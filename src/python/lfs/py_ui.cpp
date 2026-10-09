@@ -4968,9 +4968,13 @@ namespace lfs::python {
 
         m.def(
             "delete_keyframe",
-            [](size_t index) { lfs::core::events::cmd::SequencerDeleteKeyframe{.keyframe_index = index}.emit(); },
+            [](size_t index) {
+                if (index == 0)
+                    throw nb::value_error("The first keyframe cannot be deleted");
+                lfs::core::events::cmd::SequencerDeleteKeyframe{.keyframe_index = index}.emit();
+            },
             nb::arg("index"),
-            "Delete keyframe by index");
+            "Delete keyframe by index; raises ValueError for the protected first keyframe");
 
         m.def(
             "set_keyframe_easing",
@@ -5384,13 +5388,21 @@ namespace lfs::python {
                 return mcp::applyActiveMcpHttpConfig({
                     .enabled = state.enabled,
                     .expose_network = state.expose_network,
-                    .port = state.port,
+                    .port = vis::mcpPortOverride().value_or(state.port),
                     .request_logging = state.request_logging,
                 });
             },
             nb::arg("enabled"), nb::arg("expose_network"), nb::arg("port"),
             nb::arg("request_logging") = false,
             "Persist and immediately apply MCP HTTP server preferences");
+
+        m.def(
+            "get_mcp_port_override",
+            []() -> std::optional<int> {
+                nb::gil_scoped_release release;
+                return vis::mcpPortOverride();
+            },
+            "Get the MCP port set on the command line for this session, or None");
 
         m.def(
             "get_project_location",

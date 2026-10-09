@@ -113,10 +113,7 @@ namespace lfs::training {
                 LOG_INFO("Adjusted training model SH degree: {} -> {}", before, splat.get_max_sh_degree());
             }
             if (splat.get_max_sh_degree() > 0 && splat.get_active_sh_degree() != 0) {
-                const int active_before = splat.get_active_sh_degree();
                 splat.set_active_sh_degree(0);
-                LOG_INFO("Training SH schedule active degree: {} -> 0 (max {})",
-                         active_before, splat.get_max_sh_degree());
             }
         }
 
@@ -298,9 +295,6 @@ namespace lfs::training {
                 centerInitializationMeans(point_cloud->means, scene.getTrainingDataOrigin());
             } else if (data.point_cloud && data.point_cloud->size() > 0) {
                 point_cloud = data.point_cloud;
-                if (verbose) {
-                    LOG_INFO("Adding {} points to scene", point_cloud->size());
-                }
             } else {
                 if (verbose) {
                     LOG_INFO("No point cloud, using random initialization");
@@ -726,13 +720,6 @@ namespace lfs::training {
                     (void)lfs::training::sh_value::apply_shN_value_quant(model);
                 }
                 lfs::core::Tensor::trim_memory_pool();
-
-                LOG_INFO("Migrated training SplatData tensors to Vulkan-external storage "
-                         "(gaussians={}, capacity={}, shN_q16={}, shN_capacity_cells={})",
-                         n,
-                         model.means_raw().capacity(),
-                         model.shN_value_quantized(),
-                         model.shN_raw().is_valid() ? model.shN_raw().capacity() : 0);
             } catch (const std::exception& e) {
                 return std::unexpected(std::format(
                     "Failed to migrate training SplatData to Vulkan-external storage: {}",
@@ -765,10 +752,12 @@ namespace lfs::training {
             .min_track_length = effectiveMinTrackLengthForLoad(params),
             .validate_only = false,
             .load_masks = params.optimization.mask_mode != lfs::core::param::MaskMode::None,
-            .load_depths = params.optimization.depth_supervision_enabled(),
+            .load_depths = params.optimization.use_depth_loss &&
+                           params.optimization.depth_loss_weight > 0.0f,
             .load_normals = training_normal_priors_enabled(params.optimization) ||
-                            (!params.optimization.gut && params.optimization.enable_eval),
+                            params.optimization.enable_eval,
             .normal_auto_generate = params.optimization.normal_auto_generate,
+            .depth_auto_generate = params.optimization.depth_auto_generate,
             .centralize = parse_centralize(params.dataset.centralize_dataset),
             .progress = [&data_path](float percentage, const std::string& message) {
                 LOG_DEBUG("[{:5.1f}%] {}", percentage, message);
@@ -784,8 +773,6 @@ namespace lfs::training {
         if (!load_result) {
             return std::unexpected(std::format("Failed to load dataset: {}", load_result.error().format()));
         }
-
-        LOG_INFO("Dataset loaded successfully using {} loader", load_result->loader_used);
 
         return std::visit([&](auto&& data) -> std::expected<void, std::string> {
             using T = std::decay_t<decltype(data)>;
@@ -1157,9 +1144,11 @@ namespace lfs::training {
             .min_track_length = params.dataset.min_track_length,
             .validate_only = true,
             .load_masks = params.optimization.mask_mode != lfs::core::param::MaskMode::None,
-            .load_depths = params.optimization.depth_supervision_enabled(),
+            .load_depths = params.optimization.use_depth_loss &&
+                           params.optimization.depth_loss_weight > 0.0f,
             .load_normals = training_normal_priors_enabled(params.optimization),
-            .normal_auto_generate = params.optimization.normal_auto_generate};
+            .normal_auto_generate = params.optimization.normal_auto_generate,
+            .depth_auto_generate = params.optimization.depth_auto_generate};
 
         auto result = data_loader->load(params.dataset.data_path, load_options);
         if (!result) {
@@ -1382,7 +1371,7 @@ namespace lfs::training {
         }
         trainer.set_live_project_snapshot(
             destination.empty()
-                ? params.dataset.output_path / "project.licht"
+                ? params.dataset.project_file()
                 : destination,
             {}, std::move(source_path));
         trainer.set_trainer_project_save_policy({
@@ -1486,7 +1475,7 @@ namespace lfs::training {
         const std::filesystem::path out_dir = params.dataset.output_path;
         const std::string stem = params.dataset.output_name.empty()
                                      ? std::format("splat_{}", trainer.get_current_iteration())
-                                     : params.dataset.output_name;
+                                     : params.dataset.output_stem();
 
         lfs::core::ProvenanceStamp stamp = params.include_provenance
                                                ? lfs::core::make_provenance_stamp()

@@ -798,10 +798,6 @@ class TrainingPanel(Panel):
             lambda: p() is not None and p().has_params() and p().strategy == "igs+",
         )
         model.bind_func(
-            "depth_normal_disabled",
-            lambda: p() is not None and p().has_params() and p().gut,
-        )
-        model.bind_func(
             "dataset_disabled",
             lambda: (
                 not (
@@ -1777,12 +1773,6 @@ class TrainingPanel(Panel):
             return False
         if not hasattr(params, prop):
             return False
-        # GUT renders no depth or normals, so it excludes both supervision losses.
-        if prop in ("use_depth_loss", "use_normal_loss") and val and params.gut:
-            return False
-        if prop == "gut" and val:
-            params.use_depth_loss = False
-            params.use_normal_loss = False
         if prop == "ppisp_freeze_from_sidecar" and val:
             params.ppisp = True
         elif prop == "ppisp" and not val:
@@ -1822,6 +1812,8 @@ class TrainingPanel(Panel):
         params = lf.optimization_params()
         if not params or not params.has_params():
             return
+        if val == params.strategy:
+            return
         if val == "igs+" and params.gut:
             btn_gut = tr("training.conflict.btn_disable_gut")
             btn_cancel = tr("training.conflict.btn_cancel")
@@ -1848,7 +1840,9 @@ class TrainingPanel(Panel):
         if not params or not params.has_params():
             return
         try:
-            setattr(params, prop, int(val_str))
+            value = int(val_str)
+            if value != getattr(params, prop):
+                setattr(params, prop, value)
         except (ValueError, TypeError):
             pass
 
@@ -1869,7 +1863,10 @@ class TrainingPanel(Panel):
         params = lf.optimization_params()
         if not params or not params.has_params():
             return
-        params.depth_loss_mode = _depth_loss_mode_or_default(val_str)
+        value = _depth_loss_mode_or_default(val_str)
+        if value == params.depth_loss_mode:
+            return
+        params.depth_loss_mode = value
         if self._handle:
             self._handle.dirty_all()
 
@@ -2055,7 +2052,10 @@ class TrainingPanel(Panel):
         if not params or not params.has_params():
             return
         try:
-            params.set(prop, float(val))
+            value = float(val)
+            if value == getattr(params, prop):
+                return
+            params.set(prop, value)
             if self._handle:
                 self._handle.dirty(prop)
         except (ValueError, TypeError):

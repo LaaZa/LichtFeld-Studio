@@ -1,5 +1,6 @@
 /* SPDX-FileCopyrightText: 2026 LichtFeld Studio Authors
  * SPDX-License-Identifier: GPL-3.0-or-later */
+#include "core/camera.hpp"
 #include "core/event_bridge/event_bridge.hpp"
 #include "core/event_bridge/localization_manager.hpp"
 #include "core/event_bus.hpp"
@@ -11,6 +12,8 @@
 #include "gui/global_context_menu.hpp"
 #include "gui/gui_focus_state.hpp"
 #include "gui/gui_manager.hpp"
+#include "gui/line_renderer.hpp"
+#include "gui/line_renderer_overlays.hpp"
 #include "gui/panel_input_utils.hpp"
 #include "gui/panel_layout.hpp"
 #include "gui/rml_modal_overlay.hpp"
@@ -19,6 +22,9 @@
 #include "gui/rmlui/elements/scene_graph_element.hpp"
 #include "gui/rmlui/elements/terminal_element.hpp"
 #include "gui/rmlui/rml_input_utils.hpp"
+#include "gui/rmlui/rml_panel_host.hpp"
+#include "gui/rmlui/rml_theme.hpp"
+#include "gui/rmlui/rmlui_vk_backend.hpp"
 #include "gui/rotation_gizmo.hpp"
 #include "gui/scale_gizmo.hpp"
 #include "gui/scene_panel_native.hpp"
@@ -30,6 +36,7 @@
 #include "operation/undo_history.hpp"
 #include "operator/operator_registry.hpp"
 #include "rendering/coordinate_conventions.hpp"
+#include "rendering/passes/vulkan_viewport_pass.hpp"
 #include "sequencer/sequencer_controller.hpp"
 #include "tools/unified_tool_registry.hpp"
 #include "visualizer/app_store.hpp"
@@ -37,12 +44,15 @@
 #include "window/window_manager.hpp"
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/Elements/ElementFormControlInput.h>
+#include <RmlUi/Core/Elements/ElementFormControlSelect.h>
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <future>
 #include <glm/gtc/type_ptr.hpp>
 #include <gtest/gtest.h>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -557,6 +567,8 @@ namespace lfs::vis {
             });
         }
         void TearDown() override {
+            manager().vulkan_render_interface_ = nullptr;
+            gui::PanelRegistry::instance().unregister_panel("test.input_float");
             gui::cancelTranslationGizmoDrag();
             gui::cancelRotationGizmoDrag();
             gui::cancelScaleGizmoDrag();
@@ -571,6 +583,55 @@ namespace lfs::vis {
             gui::guiFocusState().reset();
         }
         gui::RmlUIManager& manager() { return gui_->rmlui_manager_; }
+        void attachInputHost(gui::RmlPanelHost& host, int width, int height, const char* markup) {
+            // Input uses the real host and null geometry renderer, without a GPU frame.
+            manager().vulkan_render_interface_ = &input_renderer_;
+            host.rml_context_ = manager().createContext(host.context_name_, width, height);
+            std::string styled_markup = markup;
+            styled_markup.insert(styled_markup.find("<style>") + 7, gui::rml_theme::getComponentsRCSS());
+            host.document_ = host.rml_context_->LoadDocumentFromMemory(styled_markup);
+            ASSERT_NE(host.document_, nullptr);
+            host.document_->Show();
+            host.rml_context_->Update();
+            host.last_fbo_w_ = width;
+            host.last_fbo_h_ = height;
+        }
+        void forwardHost(gui::RmlPanelHost& host, float x, float y) {
+            gui::PanelInputState input;
+            host.setInput(&input);
+            host.forwardInput(x, y);
+            host.setInput(nullptr);
+        }
+        void registerInputFloat() {
+            class Panel final : public gui::IPanel {
+                void draw(const gui::PanelDrawContext&) override {}
+                gui::PanelRenderCapabilities renderCapabilities() const override { return {.direct = true}; }
+            };
+            gui::PanelInfo info;
+            info.id = "test.input_float";
+            info.label = "Input float";
+            info.space = gui::PanelSpace::Floating;
+            info.panel = std::make_shared<Panel>();
+            ASSERT_TRUE(gui::PanelRegistry::instance().register_panel(std::move(info)));
+            gui::PanelRegistry::instance().apply_project_state({{
+                .id = "test.input_float",
+                .space = gui::PanelSpace::Floating,
+                .enabled = true,
+                .float_x = 100.f,
+                .float_y = 60.f,
+                .float_user_height = 100.f,
+                .float_last_bounds_valid = true,
+                .float_last_x = 100.f,
+                .float_last_y = 60.f,
+                .float_last_w = 180.f,
+                .float_last_h = 100.f,
+                .float_auto_center = false,
+            }});
+            ASSERT_TRUE(gui::PanelRegistry::instance().isPositionOverFloatingPanel(140, 100));
+        }
+        RenderInterface_VK input_renderer_;
+        // GuiManager keeps these listeners alive until their Rml context is shut down.
+        gui::RmlViewportOverlay& viewportOverlay() { return gui_->rml_viewport_overlay_; }
         void dispatch(SDL_Event event) {
             event.common.timestamp = ++timestamp_;
             event.key.windowID = SDL_GetWindowID(window_->window_);
@@ -1111,6 +1172,182 @@ namespace lfs::vis {
 
 #undef TRANSFORM_DRAG_CANCEL_TEST
 
+    TEST_F(WindowInputDispatchTest, CropScaleHandleKeepsLocalMinimumUnderNestedParents) {
+        auto& sm = *viewer_->getSceneManager();
+        auto& scene = sm.getScene();
+        auto& gizmo = gui_->gizmo();
+        auto& camera = viewer_->getViewport().camera;
+        camera.t = {0.0f, 0.0f, 12.0f};
+        camera.pivot = {0.0f, 0.0f, 0.0f};
+        camera.R = rendering::makeVisualizerLookAtRotation(camera.t, camera.pivot);
+        gui::UIContext ui{.viewer = viewer_.get(), .editor = &viewer_->getEditorContext()};
+        const gui::ViewportLayout layout{.pos = {0.0f, 0.0f}, .size = {400.0f, 300.0f}};
+        auto& frame = frameInput();
+        for (const bool nested : {false, true}) {
+            SCOPED_TRACE(nested);
+            const auto outer = scene.addGroup(nested ? "Outer" : "Root");
+            const auto inner = scene.addGroup(nested ? "Nested inner" : "Root inner", outer);
+            if (nested) {
+                auto transform = glm::rotate(glm::mat4(1.0f), 0.2f, glm::vec3(1, 0, 0));
+                transform = glm::rotate(transform, -0.12f, glm::vec3(0, 1, 0));
+                transform = glm::rotate(transform, 0.25f, glm::vec3(0, 0, 1));
+                scene.setNodeTransform(outer, glm::scale(transform, glm::vec3(1.25f, 0.82f, 1.1f)));
+            }
+            const auto model = scene.addSplat(nested ? "Nested model" : "Root model", lfs::test::licht::make_splat(3), inner);
+            const auto volume = scene.addCropBox(nested ? "Nested box" : "Root box", model);
+            core::CropBoxData data;
+            data.min = glm::vec3(-0.05f);
+            data.max = glm::vec3(0.05f);
+            if (!nested) {
+                data.min.y = -1e-5f;
+                data.max.y = 1e-5f;
+            }
+            scene.setCropBoxData(volume, data);
+            sm.changeContentType(SceneManager::ContentType::SplatFiles);
+            sm.selectNode(volume);
+            viewer_->getEditorContext().update(&sm, viewer_->getTrainerManager());
+            UnifiedToolRegistry::instance().setActiveTool("builtin.cropbox");
+            gizmo.setCropToolShape("box");
+            gizmo.setOperation(gui::GizmoOperation::Scale);
+            gizmo.setTransformSpace(TransformSpace::World);
+            gizmo.updateToolState(ui, false);
+            for (int drag = 0; drag < 3; ++drag) {
+                frame.mouse_down[0] = frame.mouse_clicked[0] = frame.mouse_released[0] = false;
+                bool found = false;
+                for (int y = 105; y <= 195 && !found; ++y) {
+                    frame.mouse_x = 290.0f;
+                    frame.mouse_y = static_cast<float>(y);
+                    gizmo.renderCropBoxGizmo(ui, layout);
+                    found = gui::isScaleGizmoHovered();
+                }
+                ASSERT_TRUE(found);
+                const glm::vec2 start(frame.mouse_x, frame.mouse_y);
+                const auto drag_to = [&](const glm::vec2 end, const bool reverse = false) {
+                    frame.mouse_x = start.x;
+                    frame.mouse_y = start.y;
+                    frame.mouse_down[0] = frame.mouse_clicked[0] = true;
+                    gizmo.renderCropBoxGizmo(ui, layout);
+                    EXPECT_TRUE(gui::isScaleGizmoActive());
+                    frame.mouse_clicked[0] = false;
+                    if (reverse) {
+                        frame.mouse_x = start.x - 200.0f;
+                        gizmo.renderCropBoxGizmo(ui, layout);
+                    }
+                    frame.mouse_x = end.x;
+                    frame.mouse_y = end.y;
+                    gizmo.renderCropBoxGizmo(ui, layout);
+                    frame.mouse_down[0] = false;
+                    frame.mouse_released[0] = true;
+                    gizmo.renderCropBoxGizmo(ui, layout);
+                    frame.mouse_released[0] = false;
+                };
+                if (drag == 0 && !nested) {
+                    op::undoHistory().clear();
+                    drag_to(start + glm::vec2(24.0f, 0.0f), true);
+                    const auto grown = *scene.getNodeById(volume)->cropbox;
+                    EXPECT_EQ(grown.min, glm::vec3(-0.05f * 1.25f, data.min.y, data.min.z));
+                    EXPECT_EQ(grown.max, glm::vec3(0.05f * 1.25f, data.max.y, data.max.z));
+                    ASSERT_TRUE(op::undoHistory().undo().success);
+                    EXPECT_EQ(scene.getNodeById(volume)->cropbox->min, data.min);
+                    ASSERT_TRUE(op::undoHistory().redo().success);
+                    EXPECT_EQ(scene.getNodeById(volume)->cropbox->min, grown.min);
+                    ASSERT_TRUE(op::undoHistory().undo().success);
+                }
+                drag_to(start - glm::normalize(start - glm::vec2(200.0f, 150.0f)) * 200.0f);
+                const auto* node = scene.getNodeById(volume);
+                ASSERT_NE(node, nullptr);
+                const glm::vec3 half = (node->cropbox->max - node->cropbox->min) * 0.5f;
+                EXPECT_NEAR(half.x, 0.0005f, 1e-8f);
+                EXPECT_NEAR(half.y, nested ? 0.0005f : data.max.y, 1e-8f);
+                EXPECT_EQ(half.z, 0.05f);
+            }
+            gizmo.deactivateAllTools();
+            op::undoHistory().clear();
+        }
+    }
+
+    TEST_F(WindowInputDispatchTest, CropToolGizmoDrawsInEveryIndependentSplitPanel) {
+        auto& sm = *viewer_->getSceneManager();
+        auto& scene = sm.getScene();
+        auto& gizmo = gui_->gizmo();
+        auto* const rendering = viewer_->getRenderingManager();
+        ASSERT_NE(rendering, nullptr);
+        auto& primary = viewer_->getViewport();
+        rendering->restoreSplitViewMode(SplitViewMode::IndependentDual, primary);
+        ASSERT_TRUE(rendering->isIndependentSplitViewActive());
+        for (const auto panel : {SplitViewPanelId::Left, SplitViewPanelId::Right}) {
+            auto& camera = rendering->resolvePanelViewport(primary, panel).camera;
+            camera.t = {panel == SplitViewPanelId::Left ? 0.0f : 6.0f, 0.0f, 12.0f};
+            camera.pivot = {0.0f, 0.0f, 0.0f};
+            camera.R = rendering::makeVisualizerLookAtRotation(camera.t, camera.pivot);
+        }
+        rendering->setFocusedSplitPanel(SplitViewPanelId::Left);
+
+        const auto model = scene.addSplat("Split model", lfs::test::licht::make_splat(3));
+        const auto box = scene.addCropBox("Split box", model);
+        core::CropBoxData data;
+        data.min = glm::vec3(-0.5f);
+        data.max = glm::vec3(0.5f);
+        scene.setCropBoxData(box, data);
+        const auto ellipsoid = scene.addEllipsoid("Split ellipsoid", model);
+        sm.changeContentType(SceneManager::ContentType::SplatFiles);
+
+        gui::UIContext ui{.viewer = viewer_.get(), .editor = &viewer_->getEditorContext()};
+        const gui::ViewportLayout layout{.pos = {0.0f, 0.0f}, .size = {400.0f, 300.0f}};
+        UnifiedToolRegistry::instance().setActiveTool("builtin.cropbox");
+        for (const auto& [shape, volume] : {std::pair{"box", box}, std::pair{"ellipsoid", ellipsoid}}) {
+            sm.selectNode(volume);
+            viewer_->getEditorContext().update(&sm, viewer_->getTrainerManager());
+            gizmo.setCropToolShape(shape);
+            for (const auto operation :
+                 {gui::GizmoOperation::Translate, gui::GizmoOperation::Rotate, gui::GizmoOperation::Scale}) {
+                SCOPED_TRACE(std::string(shape) + " " + std::to_string(static_cast<int>(operation)));
+                gizmo.setOperation(operation);
+                gizmo.updateToolState(ui, false);
+                (void)gui::consumeLineRendererCommands();
+                gizmo.renderCropBoxGizmo(ui, layout);
+                gizmo.renderEllipsoidGizmo(ui, layout);
+                // Every split panel draws the gizmo, each clipped to its own rectangle.
+                std::set<std::pair<int, int>> clips;
+                for (const auto& command : gui::consumeLineRendererCommands()) {
+                    if (command.clip_rect)
+                        clips.emplace(command.clip_rect->x, command.clip_rect->x + command.clip_rect->width);
+                }
+                ASSERT_EQ(clips.size(), 2u);
+                EXPECT_EQ(clips.begin()->first, 0);
+                EXPECT_LE(clips.begin()->second, std::next(clips.begin())->first);
+                EXPECT_EQ(std::next(clips.begin())->second, 400);
+            }
+        }
+        gizmo.deactivateAllTools();
+        rendering->restoreSplitViewMode(SplitViewMode::Disabled, primary);
+        op::undoHistory().clear();
+    }
+
+    TEST(OverlayDrawListClip, PrimitivesStayInsideTheirClipRect) {
+        (void)gui::consumeLineRendererCommands();
+        const auto color = gui::overlayColor(255, 0, 0, 255);
+        gui::NativeOverlayDrawList draw_list;
+        draw_list.PushClipRect({0.0f, 0.0f}, {200.0f, 300.0f});
+        draw_list.AddLine({50.0f, 150.0f}, {350.0f, 150.0f}, color, 3.0f);
+        draw_list.AddTriangleFilled({150.0f, 100.0f}, {350.0f, 150.0f}, {150.0f, 200.0f}, color);
+        draw_list.AddCircleFilled({195.0f, 60.0f}, 20.0f, color);
+        draw_list.AddCircle({195.0f, 240.0f}, 20.0f, color, 16, 2.0f);
+        draw_list.PopClipRect();
+
+        VulkanViewportPassParams params;
+        params.viewport_pos = {0.0f, 0.0f};
+        params.viewport_size = {400.0f, 300.0f};
+        gui::detail::appendLineRendererOverlays(params);
+
+        ASSERT_FALSE(params.ui_shape_overlay_triangles.empty());
+        for (const auto& vertex : params.ui_shape_overlay_triangles)
+            EXPECT_LE(vertex.screen_position.x, 200.0f + 1e-3f);
+        ASSERT_FALSE(params.overlay_triangles.empty());
+        for (const auto& vertex : params.overlay_triangles)
+            EXPECT_LE((vertex.position.x + 1.0f) * 0.5f * params.viewport_size.x, 200.0f + 1e-3f);
+    }
+
     // Catches gizmo hover that outlives the crop gizmo: the deleted volume's last hover
     // made every later viewport press look like a gizmo grab, so orbit never started.
     TEST_F(WindowInputDispatchTest, ApplyingCropWhileHoveringItsGizmoKeepsViewportOrbit) {
@@ -1350,6 +1587,127 @@ namespace lfs::vis {
         EXPECT_FALSE(startupVisible());
     }
 
+    TEST_F(WindowInputDispatchTest, FloatingSelectDoesNotPressDockedHostBehindIt) {
+        gui::RmlPanelHost docked(&manager(), "test-input-docked", "");
+        gui::RmlPanelHost floating(&manager(), "test-input-floating", "");
+        attachInputHost(docked, 400, 300,
+                        "<rml><head><style>body { width:400px; height:300px; }"
+                        "div { width:400px; height:300px; }</style></head>"
+                        "<body><div id='chart'/></body></rml>");
+        attachInputHost(floating, 180, 100,
+                        "<rml><head><style>body { width:180px; height:100px; font-family:Inter; font-size:14px; }"
+                        "select { position:absolute; left:20px; top:20px; width:140px; height:30px; }"
+                        "selectbox { position:absolute; top:30px; width:140px; height:120px; }"
+                        "option { display:block; height:40px; }</style></head>"
+                        "<body><select id='scale'><option value='100'>100%</option>"
+                        "<option value='125'>125%</option><option value='150'>150%</option>"
+                        "</select></body></rml>");
+        // The host's render surface leaves room for dropdowns outside its panel bounds.
+        floating.getContext()->SetDimensions({400, 300});
+        floating.getContext()->Update();
+        floating.setFloating(true);
+        registerInputFloat();
+        auto* select = dynamic_cast<Rml::ElementFormControlSelect*>(floating.getDocument()->GetElementById("scale"));
+        ASSERT_NE(select, nullptr);
+        auto* chart = docked.getDocument()->GetElementById("chart");
+        InputEventRecorder recorder;
+        chart->AddEventListener("mousedown", &recorder);
+        chart->AddEventListener("mouseup", &recorder);
+        chart->AddEventListener("click", &recorder);
+        const auto frame = [&] {
+            manager().beginFrameCursorTracking();
+            forwardHost(docked, 0, 0);
+            forwardHost(floating, 100, 60);
+        };
+        frame();
+        frame();
+
+        click(140, 95);
+        EXPECT_TRUE(select->IsSelectBoxVisible());
+        EXPECT_EQ(recorder.countOf("chart:mousedown"), 0) << recorder.joined();
+        EXPECT_EQ(recorder.countOf("chart:mouseup"), 0) << recorder.joined();
+        EXPECT_EQ(recorder.countOf("chart:click"), 0) << recorder.joined();
+
+        floating.getContext()->Update();
+        floating.getContext()->Render();
+        frame();
+        frame();
+        ASSERT_TRUE(select->IsSelectBoxVisible());
+        auto* option = select->GetOption(2);
+        const auto position = option->GetAbsoluteOffset(Rml::BoxArea::Border);
+        const int option_x = 100 + static_cast<int>(position.x) + 5;
+        const int option_y = 60 + static_cast<int>(position.y) + 5;
+        ASSERT_GT(option_y, 160); // The dropdown extends beyond the floating panel.
+        click(option_x, option_y);
+        EXPECT_EQ(select->GetValue(), "150");
+        EXPECT_FALSE(select->IsSelectBoxVisible());
+        EXPECT_EQ(recorder.countOf("chart:mousedown"), 0) << recorder.joined();
+        EXPECT_EQ(recorder.countOf("chart:mouseup"), 0) << recorder.joined();
+        frame();
+        frame();
+
+        // Blank panel space also occludes, while a point outside still reaches the chart.
+        click(260, 145);
+        EXPECT_EQ(recorder.countOf("chart:mousedown"), 0);
+        click(330, 240);
+        EXPECT_EQ(recorder.countOf("chart:mousedown"), 1);
+        EXPECT_EQ(recorder.countOf("chart:mouseup"), 1);
+        EXPECT_EQ(recorder.countOf("chart:click"), 1);
+
+        gui::PanelRegistry::instance().set_panel_enabled("test.input_float", false);
+        manager().deactivateInput(floating.getContext());
+        click(140, 95);
+        EXPECT_EQ(recorder.countOf("chart:click"), 2);
+        chart->RemoveEventListener("mousedown", &recorder);
+        chart->RemoveEventListener("mouseup", &recorder);
+        chart->RemoveEventListener("click", &recorder);
+    }
+
+    TEST_F(WindowInputDispatchTest, FloatingOcclusionPreservesDockedGestureOwnership) {
+        gui::RmlPanelHost docked(&manager(), "test-input-drag", "");
+        attachInputHost(docked, 400, 300,
+                        "<rml><head><style>body { width:400px; height:300px; }"
+                        "div { width:400px; height:300px; }</style></head>"
+                        "<body><div id='chart'/></body></rml>");
+        registerInputFloat();
+        forwardHost(docked, 0, 0);
+        auto* chart = docked.getDocument()->GetElementById("chart");
+        InputEventRecorder recorder;
+        chart->AddEventListener("mousedown", &recorder);
+        chart->AddEventListener("mouseup", &recorder);
+        const auto button = [&](bool down, float x, float y) {
+            SDL_Event event{};
+            event.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+            event.button.button = SDL_BUTTON_LEFT;
+            event.button.x = x;
+            event.button.y = y;
+            dispatch(event);
+        };
+        button(true, 140, 95);
+        button(false, 330, 240);
+        EXPECT_EQ(recorder.countOf("chart:mousedown"), 0);
+        EXPECT_EQ(recorder.countOf("chart:mouseup"), 0);
+        button(true, 330, 240);
+        button(false, 140, 95);
+        EXPECT_EQ(recorder.countOf("chart:mousedown"), 1);
+        EXPECT_EQ(recorder.countOf("chart:mouseup"), 1);
+
+        SDL_Event motion{};
+        motion.type = SDL_EVENT_MOUSE_MOTION;
+        motion.motion.y = 240.f;
+        const auto start = std::chrono::steady_clock::now();
+        constexpr int updates = 10000;
+        for (int i = 0; i < updates; ++i) {
+            motion.motion.x = 320.f + static_cast<float>(i % 10);
+            dispatch(motion);
+        }
+        const auto elapsed = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start);
+        RecordProperty("pointer_update_us", std::to_string(elapsed.count() / updates));
+        EXPECT_EQ(docked.getContext()->GetHoverElement(), chart);
+        chart->RemoveEventListener("mousedown", &recorder);
+        chart->RemoveEventListener("mouseup", &recorder);
+    }
+
     TEST_F(WindowInputDispatchTest, DispatchReusesEventStorage) {
         click();
         const FrameInputEvent* storage = nullptr;
@@ -1504,7 +1862,7 @@ namespace lfs::vis {
 
 namespace lfs::vis {
     TEST_F(WindowInputDispatchTest, ExplicitOcclusionBlocksViewportPressAndItsRelease) {
-        gui::RmlViewportOverlay overlay;
+        auto& overlay = viewportOverlay();
         overlay.init(&manager());
         overlay.setViewportBounds({0, 0}, {400, 300}, {0, 0});
         auto* context = Rml::GetContext("viewport_overlay");
@@ -2226,6 +2584,104 @@ namespace lfs::vis {
         const auto sync_elapsed = std::chrono::steady_clock::now() - sync_start;
         RecordProperty("live_sync_ns", std::chrono::duration_cast<std::chrono::nanoseconds>(sync_elapsed).count() / repeats);
         EXPECT_TRUE(ledger.plan(FrameClock::now()).empty());
+    }
+
+    TEST_F(ScenePanelRefreshTest, CameraMenusOnlyOfferActionsWithTargets) {
+        auto& scene_manager = *viewer_->getSceneManager();
+        auto& scene = scene_manager.getScene();
+        const auto empty = scene.addCameraGroup("Empty", core::NULL_NODE, 99);
+        const auto empty_nested = scene.addCameraGroup("Empty nested", core::NULL_NODE, 0);
+        scene.addGroup("Not a camera", empty_nested);
+        const auto full = scene.addCameraGroup("Full", core::NULL_NODE, 0);
+        const auto add_camera = [&](const std::string& name, const core::NodeId parent,
+                                    const std::filesystem::path& image_path, const int uid) {
+            return scene.addCamera(name, parent, std::make_shared<core::Camera>(core::Tensor::eye(3, core::Device::CPU), core::Tensor::zeros({3}, core::Device::CPU), 100.f, 110.f, 32.f, 24.f, core::Tensor{}, core::Tensor{}, core::CameraModelType::PINHOLE, name, image_path, std::filesystem::path{}, 64, 48, uid));
+        };
+        const auto no_image = add_camera("No image", core::NULL_NODE, {}, 41);
+        const auto with_image = add_camera("With image", core::NULL_NODE, "image.png", 42);
+        const auto child = add_camera("Child", full, {}, 43);
+        gui::NativeScenePanel panel(&manager());
+        gui::PanelDrawContext ctx;
+        ctx.scene = &scene;
+        const auto open_menu = [&](const core::NodeId id) {
+            menu().request({}, 0, 0);
+            ctx.scene_generation = python::get_scene_generation();
+            ++ctx.frame_serial;
+            panel.preload(ctx);
+            panel.renderDirect({.mode = gui::PanelDirectRenderMode::Preload,
+                                .width = 400,
+                                .height = 600},
+                               ctx);
+            auto* context = manager().getContext("scene_panel_native");
+            if (!context) {
+                ADD_FAILURE() << "Missing Scene panel";
+                return std::string{};
+            }
+            auto* document = context->GetDocument(0);
+            document->Show();
+            auto* tree = dynamic_cast<gui::SceneGraphElement*>(document->GetElementById("tree-container"));
+            if (!tree) {
+                ADD_FAILURE() << "Missing scene tree";
+                return std::string{};
+            }
+            tree->SetProperty("height", "500px");
+            context->SetDimensions({400, 600});
+            context->Update();
+            static_cast<void>(tree->syncFromScene(ctx));
+            context->Update();
+            auto* row = document->QuerySelector("[data-node-id='" + std::to_string(id) + "']");
+            if (!row) {
+                ADD_FAILURE() << "Missing Scene row " << id << " height=" << tree->GetClientHeight();
+                return std::string{};
+            }
+            row->DispatchEvent("mousedown", {{"button", Rml::Variant(1)}, {"mouse_x", Rml::Variant(10.f)}, {"mouse_y", Rml::Variant(10.f)}});
+            auto* menu_context = manager().getContext("global_context_menu");
+            if (!menu_context || !menu_context->GetDocument(0)) {
+                ADD_FAILURE() << "Missing context menu";
+                return std::string{};
+            }
+            return menu_context->GetDocument(0)->GetInnerRML();
+        };
+        auto html = open_menu(no_image);
+        EXPECT_EQ(html.find("scene_panel:go_to_image:"), std::string::npos);
+        EXPECT_NE(html.find("scene_panel:go_to_camera:"), std::string::npos);
+        html = open_menu(with_image);
+        EXPECT_NE(html.find("scene_panel:go_to_image:42"), std::string::npos);
+        EXPECT_NE(html.find("scene_panel:go_to_camera:42"), std::string::npos);
+        for (const auto id : {empty, empty_nested}) {
+            html = open_menu(id);
+            EXPECT_EQ(html.find("scene_panel:enable_all_train:"), std::string::npos);
+            EXPECT_EQ(html.find("scene_panel:disable_all_train:"), std::string::npos);
+            EXPECT_EQ(html.find("scene_panel:duplicate:"), std::string::npos);
+        }
+        html = open_menu(full);
+        EXPECT_NE(html.find("scene_panel:enable_all_train:"), std::string::npos);
+        EXPECT_NE(html.find("scene_panel:disable_all_train:"), std::string::npos);
+        EXPECT_EQ(html.find("scene_panel:duplicate:"), std::string::npos);
+        auto* menu_context = manager().getContext("global_context_menu");
+        ASSERT_NE(menu_context, nullptr);
+        auto* doc = menu_context->GetDocument(0);
+        ASSERT_NE(doc, nullptr);
+        auto* disable = doc->QuerySelector("[data-ctx-action='scene_panel:disable_all_train:" + std::to_string(full) + "']");
+        ASSERT_NE(disable, nullptr);
+        disable->DispatchEvent("click", {});
+        panel.preload(ctx);
+        EXPECT_FALSE(scene.getNodeById(child)->training_enabled);
+        open_menu(full);
+        auto* enable = doc->QuerySelector("[data-ctx-action='scene_panel:enable_all_train:" + std::to_string(full) + "']");
+        ASSERT_NE(enable, nullptr);
+        enable->DispatchEvent("click", {});
+        panel.preload(ctx);
+        EXPECT_TRUE(scene.getNodeById(child)->training_enabled);
+
+        scene_manager.selectNodesById({empty, empty_nested});
+        html = open_menu(empty);
+        EXPECT_EQ(html.find("scene_panel:enable_all_selected_train"), std::string::npos);
+        EXPECT_EQ(html.find("scene_panel:disable_all_selected_train"), std::string::npos);
+        scene_manager.selectNodesById({empty, with_image});
+        html = open_menu(empty);
+        EXPECT_NE(html.find("scene_panel:enable_all_selected_train"), std::string::npos);
+        EXPECT_NE(html.find("scene_panel:disable_all_selected_train"), std::string::npos);
     }
 
     TEST_F(ScenePanelRefreshTest, ContextMenuDuplicateRefreshesLiveTree) {

@@ -32,6 +32,7 @@
 #include "gui/error_event_bridge.hpp"
 #include "gui/layout_state.hpp"
 #include "gui/line_renderer.hpp"
+#include "gui/line_renderer_overlays.hpp"
 #include "gui/native_panels.hpp"
 #include "gui/panel_input_utils.hpp"
 #include "gui/panel_registry.hpp"
@@ -799,6 +800,15 @@ namespace lfs::vis::gui {
         void appendLineRendererCommandOverlays(VulkanViewportPassParams& params) {
             const auto commands = consumeLineRendererCommands();
             for (const auto& command : commands) {
+                // Draw-list clip rects keep gizmos inside their (split) viewport panel.
+                std::optional<lfs::rendering::OverlayClipRect> clip;
+                if (command.clip_rect) {
+                    const auto& rect = *command.clip_rect;
+                    clip = lfs::rendering::OverlayClipRect{
+                        .min = {static_cast<float>(rect.x), static_cast<float>(rect.y)},
+                        .max = {static_cast<float>(rect.x + rect.width), static_cast<float>(rect.y + rect.height)},
+                    };
+                }
                 switch (command.type) {
                 case LineRendererCommandType::Line:
                     appendShapeOverlayLine(params.ui_shape_overlay_triangles,
@@ -806,30 +816,61 @@ namespace lfs::vis::gui {
                                            command.p0,
                                            command.p1,
                                            command.color,
-                                           command.thickness);
+                                           command.thickness,
+                                           0.0f,
+                                           0.0f,
+                                           clip);
                     break;
                 case LineRendererCommandType::Triangle:
-                    appendScreenOverlayTriangle(params.overlay_triangles,
-                                                params,
-                                                command.p0,
-                                                command.p1,
-                                                command.p2,
-                                                command.color);
-                    break;
-                case LineRendererCommandType::Circle:
-                    appendShapeOverlayCircle(params.ui_shape_overlay_triangles,
-                                             params,
-                                             command.p0,
-                                             command.thickness,
-                                             command.color);
-                    break;
-                case LineRendererCommandType::CircleOutline:
-                    appendShapeOverlayCircleOutline(params.ui_shape_overlay_triangles,
+                    if (!clip) {
+                        appendScreenOverlayTriangle(params.overlay_triangles,
                                                     params,
                                                     command.p0,
-                                                    command.radius,
-                                                    command.color,
-                                                    command.thickness);
+                                                    command.p1,
+                                                    command.p2,
+                                                    command.color);
+                    } else {
+                        const std::array<glm::vec2, 3> triangle{command.p0, command.p1, command.p2};
+                        const auto clipped = clipPolygonToRect(triangle, *clip);
+                        for (size_t i = 1; i + 1 < clipped.size(); ++i) {
+                            appendScreenOverlayTriangle(params.overlay_triangles, params,
+                                                        clipped[0], clipped[i], clipped[i + 1], command.color);
+                        }
+                    }
+                    break;
+                case LineRendererCommandType::Circle:
+                    if (!clip) {
+                        appendShapeOverlayCircle(params.ui_shape_overlay_triangles,
+                                                 params,
+                                                 command.p0,
+                                                 command.thickness,
+                                                 command.color);
+                    } else if (command.thickness > 0.0f) {
+                        const float extent = command.thickness + 2.0f;
+                        appendScreenOverlayShapeQuad(
+                            params.ui_shape_overlay_triangles, params,
+                            {command.p0 + glm::vec2(-extent, -extent), command.p0 + glm::vec2(extent, -extent),
+                             command.p0 + glm::vec2(extent, extent), command.p0 + glm::vec2(-extent, extent)},
+                            command.p0, command.p0, command.color, {1.0f, 0.0f, command.thickness, 1.0f}, clip);
+                    }
+                    break;
+                case LineRendererCommandType::CircleOutline:
+                    if (!clip) {
+                        appendShapeOverlayCircleOutline(params.ui_shape_overlay_triangles,
+                                                        params,
+                                                        command.p0,
+                                                        command.radius,
+                                                        command.color,
+                                                        command.thickness);
+                    } else if (command.radius > 0.0f) {
+                        const float width = std::max(command.thickness, 1.0f);
+                        const float extent = command.radius + width * 0.5f + 2.0f;
+                        appendScreenOverlayShapeQuad(
+                            params.ui_shape_overlay_triangles, params,
+                            {command.p0 + glm::vec2(-extent, -extent), command.p0 + glm::vec2(extent, -extent),
+                             command.p0 + glm::vec2(extent, extent), command.p0 + glm::vec2(-extent, extent)},
+                            command.p0, command.p0, command.color, {2.0f, width, command.radius, 1.0f}, clip);
+                    }
                     break;
                 }
             }
@@ -947,7 +988,6 @@ namespace lfs::vis::gui {
             int pen_x = kPad;
             int pen_y = kPad;
             int row_h = 0;
-            int max_y = 0;
 
             for (int code = 32; code < 128; ++code) {
                 if (FT_Load_Char(face, static_cast<FT_ULong>(code), FT_LOAD_RENDER) != 0) {
@@ -991,7 +1031,6 @@ namespace lfs::vis::gui {
 
                 pen_x += w + kPad;
                 row_h = std::max(row_h, h);
-                max_y = std::max(max_y, pen_y + h);
             }
 
             if (!g_overlay_atlas.texture.upload(rgba.data(), kAtlasW, kAtlasW, 4)) {
@@ -1001,8 +1040,6 @@ namespace lfs::vis::gui {
 
             g_overlay_atlas.atlas_px_size = static_cast<float>(px);
             g_overlay_atlas.valid = true;
-            LOG_INFO("Overlay font atlas baked at {} px ({}x{} pixels used)",
-                     px, kAtlasW, max_y + kPad);
             return true;
         }
 
@@ -3741,6 +3778,10 @@ namespace lfs::vis::gui {
         }
     } // namespace
 
+    void detail::appendLineRendererOverlays(VulkanViewportPassParams& params) {
+        appendLineRendererCommandOverlays(params);
+    }
+
     GuiManager::GuiManager(VisualizerImpl* viewer)
         : viewer_(viewer),
           sequencer_ui_(viewer, sequencer_ui_state_, &rmlui_manager_),
@@ -4448,8 +4489,6 @@ namespace lfs::vis::gui {
         rebuildFonts(scale);
         current_ui_scale_ = scale;
         lfs::python::request_redraw();
-
-        LOG_INFO("UI scale applied: {:.2f}", scale);
     }
 
     void GuiManager::init() {
@@ -4482,8 +4521,6 @@ namespace lfs::vis::gui {
             if (std::filesystem::exists(source_locale_dir) &&
                 std::filesystem::is_directory(source_locale_dir)) {
                 locale_dir = source_locale_dir;
-                LOG_INFO("Localization dev source enabled: {}",
-                         lfs::core::path_to_utf8(locale_dir));
             }
         }
 #endif
@@ -4500,7 +4537,6 @@ namespace lfs::vis::gui {
                     lfs::vis::clearLanguagePreference();
                 }
             }
-            LOG_INFO("Localization initialized with language: {}", loc.getCurrentLanguageName());
         }
 
         float saved_scale = lfs::vis::loadUiScalePreference();
@@ -4572,7 +4608,6 @@ namespace lfs::vis::gui {
         startup_overlay_.init(&rmlui_manager_);
         const bool startup_overlay_enabled = viewer_->options_.show_startup_overlay;
         if (!startup_overlay_enabled) {
-            LOG_INFO("Startup overlay disabled");
             startup_overlay_.dismiss();
         }
         rml_shell_frame_.init(&rmlui_manager_);
@@ -4795,11 +4830,6 @@ namespace lfs::vis::gui {
         // worker and adopt its result from the normal render tick.
         launchDevResourceScan();
         dev_resource_watch_.next_scan = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-        LOG_INFO("Resource hot reload enabled (RmlUI: '{}', locales: '{}')",
-                 dev_resource_watch_.rml_dir.empty() ? std::string("<disabled>")
-                                                     : lfs::core::path_to_utf8(dev_resource_watch_.rml_dir),
-                 dev_resource_watch_.locale_dir.empty() ? std::string("<disabled>")
-                                                        : lfs::core::path_to_utf8(dev_resource_watch_.locale_dir));
 #endif
     }
 
@@ -5042,10 +5072,6 @@ namespace lfs::vis::gui {
                 reloadLocalizationResources();
             if (reload_rml || reload_locale)
                 reloadRmlResources();
-
-            LOG_INFO("Hot-reloaded dev resources{}{}",
-                     reload_rml ? " (RmlUI)" : "",
-                     reload_locale ? " (locales)" : "");
         }
 
         if (dev_resource_watch_.scan_future.valid())
@@ -7260,14 +7286,7 @@ namespace lfs::vis::gui {
             }
             if (rml_modal_overlay_->hasPendingRenderWork()) {
                 LOG_TIMER_THRESHOLD("gui_render.menu_context_modal_render.modal_overlay", 0.25);
-                rml_modal_overlay_->render(panel_input.screen_w,
-                                           panel_input.screen_h,
-                                           panel_input.screen_x,
-                                           panel_input.screen_y,
-                                           viewport_layout_.pos.x,
-                                           viewport_layout_.pos.y,
-                                           viewport_layout_.size.x,
-                                           viewport_layout_.size.y);
+                rml_modal_overlay_->render(panel_input.screen_w, panel_input.screen_h);
             }
         }
 
