@@ -520,6 +520,40 @@ namespace {
                   byte_vector(R"({"generation":3})"));
     }
 
+    TEST(ProjectContainerReader, HeadIdentityFollowsTheNewestValidHead) {
+        TemporaryDirectory temporary;
+        const fs::path path = temporary.path / "head-identity.licht";
+        const ChunkKey key = fixed_key("PROJ", 961);
+        for (std::uint64_t generation = 1; generation <= 3; ++generation) {
+            ProjectWriter writer = require_result(
+                generation == 1
+                    ? ProjectWriter::create(path, fixture_create_options(960))
+                    : ProjectWriter::append(path, fixture_append_options()));
+            const auto payload = byte_vector(
+                std::format(R"({{"generation":{}}})", generation));
+            require_status(writer.plan_commit(fixture_commit_options(
+                960 + generation * 3, 961 + generation * 3, generation)));
+            require_status(writer.preflight(payload.size()));
+            require_status(writer.write_chunk(key, payload));
+            require_status(writer.commit());
+
+            const ProjectHeadIdentity head =
+                require_result(ProjectReader::read_head_identity(path));
+            const ProjectReader reader = require_result(ProjectReader::open(path));
+            EXPECT_EQ(head.project_uuid, reader.superblock().project_uuid);
+            EXPECT_EQ(head.commit_uuid, reader.commit().commit_uuid);
+            EXPECT_EQ(head.generation, generation);
+        }
+
+        const std::uint32_t newest_slot =
+            require_result(ProjectReader::open(path)).selected_head().slot_id;
+        const std::array corruption = {std::byte{0xff}};
+        write_file_range(path, HEAD_SLOT_OFFSETS[newest_slot] + 40, corruption);
+        EXPECT_EQ(require_result(ProjectReader::read_head_identity(path)).generation, 2u);
+        write_file_range(path, HEAD_SLOT_OFFSETS[1 - newest_slot] + 40, corruption);
+        EXPECT_FALSE(ProjectReader::read_head_identity(path));
+    }
+
     TEST(ProjectContainerReader,
          PositionalReadValidatesOnlyTouchedBlockCrcRanges) {
         TemporaryDirectory temporary;
@@ -3764,8 +3798,16 @@ namespace {
         require_result(detail::NativeFile::create_new(stale)).reset();
         sweep_stale_licht_artifacts_for_known_masters({destination});
         EXPECT_FALSE(detail::project_fs::exists(stale));
-        EXPECT_EQ(detail::project_fs::weakly_canonical(destination, error), fs::absolute(destination));
-        EXPECT_FALSE(error);
+        // Canonicalization expands an 8.3 temporary root (C:\Users\RUNNER~1 on CI), so the root is checked by file
+        // identity. Paths are compared as UTF-8: gtest prints fs::path through the ANSI code page, which throws on 保存.
+        const auto canonical = detail::project_fs::weakly_canonical(destination, error);
+        ASSERT_FALSE(error) << error.message();
+        const auto canonical_text = lfs::core::path_to_utf8(canonical);
+        EXPECT_FALSE(canonical.native().starts_with(L"\\\\?\\")) << canonical_text;
+        const auto tail = fs::path(std::string(100, 'a')) / std::string(100, 'b') / lfs::core::utf8_to_path("保存") / "copy.licht";
+        EXPECT_TRUE(canonical_text.ends_with(lfs::core::path_to_utf8(tail))) << canonical_text;
+        EXPECT_TRUE(fs::equivalent(detail::project_fs::native_path(canonical), detail::project_fs::native_path(destination), error))
+            << error.message();
     }
 #endif
 
