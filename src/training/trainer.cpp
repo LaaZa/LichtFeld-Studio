@@ -811,6 +811,11 @@ namespace lfs::training {
             scene->syncTrainingModelTopology(static_cast<size_t>(model.size()));
         }
 
+        size_t reported_gaussian_count(const lfs::core::SplatData& model) {
+            const size_t count = model.size();
+            return count - std::min(count, model.deleted_count());
+        }
+
         [[nodiscard]] std::array<float, 3> lerp_color(const std::array<float, 3>& a,
                                                       const std::array<float, 3>& b,
                                                       const float t) {
@@ -1811,11 +1816,13 @@ namespace lfs::training {
             opt_params.lambda_dssim > 0.0f;
 
         if (photometric_weight.is_valid()) {
+            float mask_normalization = 0.0f;
             if (use_decoupled_appearance_loss) {
                 auto& masked_decoupled_ws = photometric_loss_.arena().masked_decoupled();
                 auto [loss_tensor, ctx] = lfs::training::kernels::masked_decoupled_fused_l1_ssim_forward(
                     corrected, raw_rendered, gt_image, photometric_weight, opt_params.lambda_dssim,
                     masked_decoupled_ws, base_denominator);
+                mask_normalization = ctx.mask_sum_value;
                 auto grads = lfs::training::kernels::masked_decoupled_fused_l1_ssim_backward(
                     ctx, masked_decoupled_ws);
 
@@ -1830,12 +1837,22 @@ namespace lfs::training {
                 auto& masked_ws = photometric_loss_.arena().masked_fused();
                 auto [loss_tensor, ctx] = lfs::training::kernels::masked_fused_l1_ssim_forward(
                     corrected, gt_image, photometric_weight, opt_params.lambda_dssim, masked_ws, base_denominator);
+                mask_normalization = ctx.mask_sum_value;
                 grad_corrected = lfs::training::kernels::masked_fused_l1_ssim_backward(ctx, masked_ws);
                 loss = loss_tensor;
 
                 if (grad_corrected.ndim() == 4 && corrected.ndim() == 3) {
                     grad_corrected = grad_corrected.squeeze(0);
                 }
+            }
+
+            // The loss already reads this normalization; epsilon alone means no contributing pixels.
+            if (has_user_mask && mode == param::MaskMode::Ignore && !empty_ignore_mask_warned_ &&
+                mask_normalization <= kernels::SSIM_EPSILON) {
+                empty_ignore_mask_warned_ = true;
+                LOG_WARN("Effective ignore mask excludes every pixel in a training view: no photometric supervision. "
+                         "If all views are masked out, zero loss does not indicate a trained model. "
+                         "Check mask threshold and inversion.");
             }
 
             if (has_user_mask &&
@@ -1952,12 +1969,16 @@ namespace lfs::training {
             return std::unexpected(mask_result.error());
         }
 
-        const int n_before = static_cast<int>(splat_data.size());
+        // Strategies may keep pruned rows as reusable slots. Publish the active
+        // count here, once, so progress and UI polling need no GPU reduction.
+        splat_data.refresh_deleted_count();
+        const size_t n_before = reported_gaussian_count(splat_data);
         strategy_->remove_gaussians(*mask_result);
-        const int n_after = static_cast<int>(splat_data.size());
+        splat_data.refresh_deleted_count();
+        const size_t n_after = reported_gaussian_count(splat_data);
 
         LOG_INFO("Sparsity pruning: {} -> {} Gaussians ({}% reduction)",
-                 n_before, n_after, static_cast<int>(100.0f * (n_before - n_after) / n_before));
+                 n_before, n_after, n_before > 0 ? static_cast<int>(100.0f * (n_before - n_after) / n_before) : 0);
 
         sparsity_optimizer_.reset();
         return {};
@@ -2223,13 +2244,13 @@ namespace lfs::training {
                 progress_->update(
                     slot.iter,
                     loss_value,
-                    static_cast<int>(strategy_->get_model().size()),
+                    static_cast<int>(reported_gaussian_count(strategy_->get_model())),
                     get_progress_phase(slot.iter, in_controller_phase));
             }
             lfs::core::events::state::TrainingProgress{
                 .iteration = slot.iter,
                 .loss = loss_value,
-                .num_gaussians = static_cast<int>(strategy_->get_model().size()),
+                .num_gaussians = static_cast<int>(reported_gaussian_count(strategy_->get_model())),
                 .is_refining = strategy_->is_refining(slot.iter)}
                 .emit();
         }
@@ -2846,15 +2867,24 @@ namespace lfs::training {
                         "Scene has no cameras with image files available for training");
                 }
 
+                const bool hold_out = params.optimization.holds_out_eval_images();
+                const bool keep_project_split = params.resume_project && hold_out &&
+                                                std::ranges::any_of(scene_->getAllCameras(), [](const auto& camera) {
+                                                    return camera->split() == lfs::core::CameraSplit::Eval;
+                                                });
                 if (params.overrides.has_dataset_key("test_every") ||
-                    params.overrides.has_optimization_key("enable_eval") ||
-                    params.overrides.has_optimization_key("eval_all")) {
+                    (!keep_project_split &&
+                     (params.overrides.has_optimization_key("enable_eval") ||
+                      params.overrides.has_optimization_key("eval_all")))) {
+                    if (params.resume_project)
+                        LOG_INFO("Updating project camera split from explicit evaluation options");
                     std::sort(
                         source_cameras.begin(), source_cameras.end(),
-                        [](const auto& lhs, const auto& rhs) {
+                        [&](const auto& lhs, const auto& rhs) {
+                            if (hold_out && !params.resume_checkpoint && lhs->image_name() != rhs->image_name())
+                                return lhs->image_name() < rhs->image_name();
                             return lhs->uid() < rhs->uid();
                         });
-                    const bool hold_out = params.optimization.holds_out_eval_images();
                     const int test_every = std::max(1, params.dataset.test_every);
                     for (size_t i = 0; i < source_cameras.size(); ++i) {
                         const bool is_val =
@@ -3212,7 +3242,7 @@ namespace lfs::training {
                 lfs::training::HookContext ctx{
                     .iteration = current_iteration_.load(),
                     .loss = current_loss_.load(),
-                    .num_gaussians = strategy_ ? strategy_->get_model().size() : 0,
+                    .num_gaussians = strategy_ ? reported_gaussian_count(strategy_->get_model()) : 0,
                     .is_refining = strategy_ ? strategy_->is_refining(current_iteration_.load()) : false,
                     .trainer = this};
                 lfs::training::CommandCenter::instance().set_phase(lfs::training::TrainingPhase::SafeControl);
@@ -5614,12 +5644,12 @@ namespace lfs::training {
                 progress_->pause();
             }
             if (on_paused_) {
-                on_paused_(iter);
+                on_paused_(get_progress_iteration());
             }
             // B3: the previous step is complete; release the production loss arena.
             photometric_loss_.arena().reset();
             resize_rasterizer_arena_at_boundary("B3 pause", true);
-            LOG_INFO("Training paused at iteration {}", iter);
+            LOG_INFO("Training paused at iteration {}", get_progress_iteration());
             lfs::diagnostics::VramProfiler::instance().mark("training_pause");
             LOG_DEBUG("Click 'Resume Training' to continue.");
         } else if (!pause_requested_.load() && is_paused_.load()) {
@@ -5628,7 +5658,7 @@ namespace lfs::training {
                 progress_->resume(
                     iter,
                     current_loss_.load(),
-                    static_cast<int>(strategy_->get_model().size()),
+                    static_cast<int>(reported_gaussian_count(strategy_->get_model())),
                     get_progress_phase(iter));
             }
             LOG_INFO("Training resumed at iteration {}", iter);
@@ -6097,15 +6127,18 @@ namespace lfs::training {
                 // Python hook: iteration start (safe, pre-forward)
                 {
                     lfs::training::HookContext ctx{
-                        .iteration = iter,
+                        .iteration = get_progress_iteration(),
                         .loss = current_loss_.load(),
-                        .num_gaussians = strategy_ ? strategy_->get_model().size() : 0,
+                        .num_gaussians = strategy_ ? reported_gaussian_count(strategy_->get_model()) : 0,
                         .is_refining = strategy_ ? strategy_->is_refining(iter) : false,
                         .trainer = this};
                     lfs::training::CommandCenter::instance().set_phase(lfs::training::TrainingPhase::IterationStart);
                     lfs::training::CommandCenter::instance().update_snapshot(
                         ctx, get_total_iterations(), is_paused_.load(), is_running_.load(), stop_requested_.load(),
                         lfs::training::TrainingPhase::IterationStart);
+                    // The hook still addresses the upcoming step, even when
+                    // the published progress describes the paused model.
+                    ctx.iteration = iter;
                     lfs::training::ControlBoundary::instance().notify(lfs::training::ControlHook::IterationStart, ctx);
                     auto view = lfs::training::CommandCenter::instance().snapshot();
                     lfs::training::CommandCenter::instance().drain_enqueued(view);
@@ -8132,7 +8165,7 @@ namespace lfs::training {
                             lfs::training::HookContext ctx{
                                 .iteration = iter,
                                 .loss = current_loss_.load(),
-                                .num_gaussians = strategy_ ? strategy_->get_model().size() : 0,
+                                .num_gaussians = strategy_ ? reported_gaussian_count(strategy_->get_model()) : 0,
                                 .is_refining = strategy_ ? strategy_->is_refining(iter) : false,
                                 .trainer = this};
                             lfs::training::CommandCenter::instance().set_phase(lfs::training::TrainingPhase::OptimizerStep);
@@ -8386,7 +8419,7 @@ namespace lfs::training {
                     lfs::training::HookContext ctx{
                         .iteration = iter,
                         .loss = current_loss_.load(),
-                        .num_gaussians = strategy_ ? strategy_->get_model().size() : 0,
+                        .num_gaussians = strategy_ ? reported_gaussian_count(strategy_->get_model()) : 0,
                         .is_refining = strategy_ ? strategy_->is_refining(iter) : false,
                         .trainer = this};
                     lfs::training::CommandCenter::instance().set_phase(lfs::training::TrainingPhase::SafeControl);
@@ -8618,6 +8651,7 @@ namespace lfs::training {
         }
 
         training_complete_ = false;
+        empty_ignore_mask_warned_ = false;
         pending_snapshot_finish_reason_ =
             lfs::io::project::TrainingFinishReason::None;
         ready_to_start_ = false; // Reset the flag
@@ -8658,7 +8692,7 @@ namespace lfs::training {
                 lfs::training::HookContext ctx{
                     .iteration = 0,
                     .loss = current_loss_.load(),
-                    .num_gaussians = strategy_ ? strategy_->get_model().size() : 0,
+                    .num_gaussians = strategy_ ? reported_gaussian_count(strategy_->get_model()) : 0,
                     .is_refining = strategy_ ? strategy_->is_refining(0) : false,
                     .trainer = this};
                 lfs::training::CommandCenter::instance().set_phase(lfs::training::TrainingPhase::SafeControl);
@@ -8684,7 +8718,7 @@ namespace lfs::training {
                 progress_->update(
                     iter,
                     current_loss_.load(),
-                    static_cast<int>(strategy_->get_model().size()),
+                    static_cast<int>(reported_gaussian_count(strategy_->get_model())),
                     get_progress_phase(iter));
             }
 
@@ -9341,7 +9375,7 @@ namespace lfs::training {
             lfs::training::HookContext ctx{
                 .iteration = terminal_iteration,
                 .loss = current_loss_.load(),
-                .num_gaussians = strategy_ ? strategy_->get_model().size() : 0,
+                .num_gaussians = strategy_ ? reported_gaussian_count(strategy_->get_model()) : 0,
                 .is_refining = strategy_ ? strategy_->is_refining(terminal_iteration) : false,
                 .trainer = this};
             command_center.set_phase(lfs::training::TrainingPhase::SafeControl);

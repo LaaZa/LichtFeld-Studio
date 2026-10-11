@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -40,6 +41,19 @@ namespace lfs::gui {
         constexpr std::array<float, 4> SCALE_VALUES{0.25f, 0.5f, 0.75f, 1.0f};
         constexpr float MIN_TRIM_SECONDS = 0.1f;
         constexpr int MAX_TIMELINE_MARKERS = 180;
+
+        [[nodiscard]] float maximumExtractionFps(const io::VideoPlayer& player) {
+            const double source_fps = player.isOpen() ? player.fps() : 0.0;
+            if (!std::isfinite(source_fps) || source_fps <= 0.0 ||
+                source_fps > std::numeric_limits<float>::max())
+                return 30.0f;
+            return std::max(0.1f, static_cast<float>(source_fps));
+        }
+
+        [[nodiscard]] float sliderExtractionFps(const float value, const io::VideoPlayer& player) {
+            const double rounded = std::round(static_cast<double>(value) * 10.0) / 10.0;
+            return static_cast<float>(std::clamp(rounded, 0.1, static_cast<double>(maximumExtractionFps(player))));
+        }
 
         [[nodiscard]] std::string formatTime(const double seconds) {
             if (!std::isfinite(seconds) || seconds < 0.0)
@@ -246,6 +260,23 @@ namespace lfs::gui {
             if (!end || end == value.c_str())
                 return fallback;
             return static_cast<int>(std::clamp<long>(parsed, 1, 65535));
+        }
+
+        // Frames and metadata an extraction with `pattern` writes into `dir`. Other files,
+        // such as photos already in the folder, are never part of the list.
+        std::vector<std::filesystem::path> generatedExtractionFiles(const std::filesystem::path& dir,
+                                                                    const std::string& pattern) {
+            std::vector<std::filesystem::path> files;
+            std::error_code ec;
+            for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+                std::error_code type_ec;
+                if (!it->is_regular_file(type_ec))
+                    continue;
+                const std::string name = lfs::core::path_to_utf8(it->path().filename());
+                if (name == "extraction_metadata.json" || io::isGeneratedFrameFilename(pattern, name))
+                    files.push_back(it->path());
+            }
+            return files;
         }
 
     } // namespace
@@ -677,6 +708,10 @@ namespace lfs::gui {
         custom_width_input_el_ = nullptr;
         custom_height_input_el_ = nullptr;
         output_resolution_el_ = nullptr;
+        naming_select_el_ = nullptr;
+        custom_pattern_row_el_ = nullptr;
+        naming_help_el_ = nullptr;
+        naming_error_el_ = nullptr;
         pattern_input_el_ = nullptr;
         pattern_example_el_ = nullptr;
         start_btn_el_ = nullptr;
@@ -754,6 +789,10 @@ namespace lfs::gui {
         custom_width_input_el_ = document_->GetElementById("custom-width-input");
         custom_height_input_el_ = document_->GetElementById("custom-height-input");
         output_resolution_el_ = document_->GetElementById("output-resolution");
+        naming_select_el_ = dynamic_cast<Rml::ElementFormControlSelect*>(document_->GetElementById("naming-select"));
+        custom_pattern_row_el_ = document_->GetElementById("custom-pattern-row");
+        naming_help_el_ = document_->GetElementById("naming-help");
+        naming_error_el_ = document_->GetElementById("naming-error");
         pattern_input_el_ = document_->GetElementById("pattern-input");
         pattern_example_el_ = document_->GetElementById("pattern-example");
         start_btn_el_ = document_->GetElementById("btn-start");
@@ -801,7 +840,8 @@ namespace lfs::gui {
             format_select_el_ && quality_row_el_ && quality_slider_el_ && quality_value_el_ &&
             resolution_select_el_ && scale_row_el_ && scale_select_el_ &&
             custom_resolution_row_el_ && custom_width_input_el_ && custom_height_input_el_ &&
-            output_resolution_el_ && pattern_input_el_ && pattern_example_el_ &&
+            output_resolution_el_ && naming_select_el_ && custom_pattern_row_el_ &&
+            naming_help_el_ && naming_error_el_ && pattern_input_el_ && pattern_example_el_ &&
             start_btn_el_ && stop_btn_el_ && cancel_btn_el_ && select_hint_el_ && progress_section_el_ &&
             progress_text_el_ && progress_bar_el_ && complete_section_el_ &&
             complete_text_el_ && ok_btn_el_ && stopped_section_el_ && stopped_text_el_ &&
@@ -872,6 +912,7 @@ namespace lfs::gui {
         listen_change(mode_select_el_);
         listen_change(fps_slider_el_);
         listen_input(fps_slider_el_);
+        listen_change(fps_value_el_);
         listen_change(interval_input_el_);
         listen_change(format_select_el_);
         listen_change(quality_slider_el_);
@@ -880,6 +921,7 @@ namespace lfs::gui {
         listen_change(scale_select_el_);
         listen_change(custom_width_input_el_);
         listen_change(custom_height_input_el_);
+        listen_change(naming_select_el_);
         listen_change(pattern_input_el_);
         listen_change(trim_start_input_el_);
         listen_change(trim_end_input_el_);
@@ -934,11 +976,16 @@ namespace lfs::gui {
         changed |= setCachedAttribute(trim_end_set_el_, "title", LOC(VideoExtractor::SET_END));
         changed |= setCachedAttribute(browse_output_el_, "title", LOC(VideoExtractor::SELECT_FOLDER));
         changed |= setCachedAttribute(fps_slider_el_, "title", LOC(VideoExtractor::FPS_TOOLTIP));
+        changed |= setCachedAttribute(fps_value_el_, "title", LOC(VideoExtractor::FPS_TOOLTIP));
         changed |= setCachedAttribute(interval_input_el_, "title", LOC(VideoExtractor::INTERVAL_TOOLTIP));
         changed |= setCachedAttribute(quality_slider_el_, "title", LOC(VideoExtractor::QUALITY_LABEL));
         changed |= setCachedAttribute(custom_width_input_el_, "title", LOC(VideoExtractor::WIDTH));
         changed |= setCachedAttribute(custom_height_input_el_, "title", LOC(VideoExtractor::HEIGHT));
         changed |= setCachedAttribute(pattern_input_el_, "title", LOC(VideoExtractor::PATTERN_TOOLTIP));
+        changed |= setCachedSelectLabels(naming_select_el_,
+                                         std::array{"video_extractor.naming_video_frame", "video_extractor.naming_video_number",
+                                                    "video_extractor.naming_frame_number", "video_extractor.naming_number",
+                                                    "video_extractor.naming_custom"});
         changed |= setCachedSelectLabels(
             mode_select_el_,
             std::array{"video_extractor.mode_fps", "video_extractor.mode_interval"});
@@ -1161,10 +1208,19 @@ namespace lfs::gui {
         changed |= setCachedDisabled(trim_start_set_el_, !has_video);
         changed |= setCachedDisabled(trim_end_set_el_, !has_video);
         changed |= setCachedDisabled(trim_reset_el_, !has_video);
-        changed |= setCachedDisabled(start_btn_el_, !can_start);
+        std::string resolved_pattern, naming_error;
+        const bool naming_valid = resolveFilenamePattern(resolved_pattern, naming_error);
+        changed |= setCachedDisabled(start_btn_el_, !can_start || !naming_valid);
         changed |= setCachedDisabled(stop_btn_el_, !extracting || stop_requested);
         changed |= setCachedDisabled(cancel_btn_el_, false);
 
+        changed |= setCachedSelect(naming_select_el_, naming_selection_);
+        changed |= setCachedDisabled(naming_select_el_, extracting);
+        changed |= setCachedDisabled(pattern_input_el_, extracting);
+        changed |= setCachedProperty(custom_pattern_row_el_, "display", naming_selection_ == 4 ? "flex" : "none");
+        changed |= setCachedProperty(naming_help_el_, "display", naming_selection_ == 4 ? "block" : "none");
+        changed |= setCachedText(naming_error_el_, naming_error);
+        changed |= setCachedProperty(naming_error_el_, "display", naming_valid ? "none" : "block");
         changed |= setCachedSelect(mode_select_el_, mode_selection_);
         changed |= setCachedSelect(format_select_el_, format_selection_);
         changed |= setCachedSelect(resolution_select_el_, resolution_mode_);
@@ -1224,15 +1280,27 @@ namespace lfs::gui {
             changed |= setCachedText(sharpness_threshold_value_el_, std::to_string(val) + "%");
         }
 
-        changed |= setCachedControlValue(fps_slider_el_, std::format("{:.1f}", fps_));
-        changed |= setCachedText(fps_value_el_, std::format("{:.1f} {}", fps_, LOC(VideoExtractor::FPS_LABEL)));
+        // RmlUi range controls emit change while their value attribute is being updated.
+        // Synchronizing the slider must not change the requested FPS.
+        changed |= setCachedDisabled(fps_slider_el_, !has_video || extracting);
+        changed |= setCachedDisabled(fps_value_el_, !has_video || extracting);
+        const float maximum_fps = maximumExtractionFps(*player_);
+        const float requested_fps = std::clamp(fps_, 0.1f, maximum_fps);
+        changed |= setCachedAttribute(fps_slider_el_, "max", std::format("{}", maximum_fps));
+        changed |= setCachedControlValue(fps_slider_el_, std::format("{}", requested_fps));
+        fps_ = requested_fps;
+        // At the source limit, match the range control's step-rounded display
+        // without changing the exact FPS used for extraction.
+        changed |= setCachedControlValue(fps_value_el_, fps_ == maximum_fps
+                                                            ? std::format("{}", readFloatValue(fps_slider_el_, fps_))
+                                                            : std::format("{}", fps_));
         changed |= setCachedControlValue(interval_input_el_, std::to_string(frame_interval_));
         changed |= setCachedText(interval_value_el_, LOC(VideoExtractor::FRAMES_UNIT));
         changed |= setCachedControlValue(quality_slider_el_, std::to_string(jpg_quality_));
         changed |= setCachedText(quality_value_el_, std::format("{}%", jpg_quality_));
         changed |= setCachedControlValue(custom_width_input_el_, std::to_string(custom_width_));
         changed |= setCachedControlValue(custom_height_input_el_, std::to_string(custom_height_));
-        changed |= setCachedControlValue(pattern_input_el_, filename_pattern_.data());
+        changed |= setCachedControlValue(pattern_input_el_, filename_pattern_);
 
         const std::string video_display = video_path_.empty()
                                               ? LOC(VideoExtractor::NO_FILE)
@@ -1330,9 +1398,12 @@ namespace lfs::gui {
                                      ? LOCF(VideoExtractor::OUTPUT_RES, out_w, out_h)
                                      : std::format("{} --", LOC(VideoExtractor::OUTPUT)));
         const char* const ext = format_selection_ == 0 ? ".png" : ".jpg";
-        const std::string preview = io::formatFrameFilenameStem(filename_pattern_.data(), 1);
-        changed |= setCachedText(pattern_example_el_,
-                                 LOCF(VideoExtractor::EXAMPLE, preview.c_str(), ext));
+        std::string resolved_pattern, naming_error;
+        const bool valid = resolveFilenamePattern(resolved_pattern, naming_error);
+        const std::string preview = valid ? io::formatFrameFilenameStem(resolved_pattern, 1) : "";
+        changed |= setCachedText(pattern_example_el_, valid
+                                                          ? LOCF(player_->isOpen() ? VideoExtractor::EXAMPLE : "video_extractor.naming_example_pending", preview.c_str(), ext)
+                                                          : "");
 
         if (changed)
             markContentDirty();
@@ -1370,6 +1441,11 @@ namespace lfs::gui {
         if (event_id == Rml::EventId::Change || event_id == Rml::EventId::Blur ||
             event.GetType() == "input") {
             handleChange(id, event_id != Rml::EventId::Blur);
+            if (id == "fps-slider" && event_id == Rml::EventId::Change) {
+                const float value = event.GetParameter<float>("value", fps_);
+                if (std::isfinite(value))
+                    fps_ = sliderExtractionFps(value, *player_);
+            }
             event.StopPropagation();
         }
     }
@@ -1424,23 +1500,11 @@ namespace lfs::gui {
             beginExtractionFromUi();
         } else if (id == "overwrite-yes") {
             if (pending_params_set_) {
-                // Clear the folder
-                const auto& dir = pending_params_.output_dir;
-                if (std::filesystem::exists(dir)) {
-                    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-                        if (!entry.is_regular_file())
-                            continue;
-                        const auto ext = entry.path().extension().string();
-                        std::string lower;
-                        lower.reserve(ext.size());
-                        for (auto c : ext)
-                            lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-                        if (lower == ".jpg" || lower == ".jpeg" || lower == ".png" ||
-                            entry.path().filename() == "extraction_metadata.json") {
-                            std::error_code ec;
-                            std::filesystem::remove(entry.path(), ec);
-                        }
-                    }
+                // Remove only what this extraction would write; other files stay.
+                for (const auto& path : generatedExtractionFiles(pending_params_.output_dir,
+                                                                 pending_params_.filename_pattern)) {
+                    std::error_code ec;
+                    std::filesystem::remove(path, ec);
                 }
                 pending_params_set_ = false;
                 if (overwrite_overlay_el_)
@@ -1491,7 +1555,9 @@ namespace lfs::gui {
     void VideoExtractorDialog::handleChange(const std::string& id, const bool explicit_edit) {
         Rml::Element* changed_control = nullptr;
 
-        if (id == "mode-select") {
+        if (id == "naming-select") {
+            naming_selection_ = naming_select_el_ ? std::clamp(naming_select_el_->GetSelection(), 0, 4) : naming_selection_;
+        } else if (id == "mode-select") {
             mode_selection_ = mode_select_el_ ? mode_select_el_->GetSelection() : mode_selection_;
         } else if (id == "format-select") {
             format_selection_ = format_select_el_ ? format_select_el_->GetSelection() : format_selection_;
@@ -1500,8 +1566,16 @@ namespace lfs::gui {
         } else if (id == "scale-select") {
             scale_selection_ = scale_select_el_ ? scale_select_el_->GetSelection() : scale_selection_;
         } else if (id == "fps-slider") {
-            fps_ = std::clamp(readFloatValue(fps_slider_el_, fps_), 0.1f, 30.0f);
+            fps_ = sliderExtractionFps(readFloatValue(fps_slider_el_, fps_), *player_);
             changed_control = fps_slider_el_;
+        } else if (id == "fps-value") {
+            const std::string value = controlValue(fps_value_el_);
+            float parsed = 0.0f;
+            const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+            if (error == std::errc{} && end == value.data() + value.size() && std::isfinite(parsed)) {
+                fps_ = std::clamp(parsed, 0.1f, maximumExtractionFps(*player_));
+            }
+            changed_control = fps_value_el_;
         } else if (id == "interval-input") {
             frame_interval_ = std::clamp(readIntValue(interval_input_el_, frame_interval_), 1, 100);
             changed_control = interval_input_el_;
@@ -1650,12 +1724,68 @@ namespace lfs::gui {
             custom_width_ = std::max(16, readIntValue(custom_width_input_el_, custom_width_));
         } else if (id == "custom-height-input") {
             custom_height_ = std::max(16, readIntValue(custom_height_input_el_, custom_height_));
-        } else if (id == "pattern-input" && pattern_input_el_) {
-            const std::string pattern = controlValue(pattern_input_el_);
-            const std::string normalized = pattern.empty() ? "frame_%d" : pattern;
-            std::fill(filename_pattern_.begin(), filename_pattern_.end(), '\0');
-            std::strncpy(filename_pattern_.data(), normalized.c_str(), filename_pattern_.size() - 1);
+        } else if (id == "pattern-input" && pattern_input_el_ && naming_selection_ == 4) {
+            filename_pattern_ = controlValue(pattern_input_el_);
         }
+    }
+
+    bool VideoExtractorDialog::resolveFilenamePattern(std::string& pattern, std::string& error) const {
+        static constexpr std::array<std::string_view, 4> presets{
+            "{video}_frame_%05d", "{video}_%05d", "frame_%05d", "%05d"};
+        const std::string_view source = naming_selection_ >= 0 && naming_selection_ < 4
+                                            ? presets[naming_selection_]
+                                            : std::string_view(filename_pattern_);
+        const std::string video_name = video_path_.empty() ? "video" : lfs::core::path_to_utf8(video_path_.stem());
+        pattern.clear();
+        error.clear();
+        for (size_t i = 0; i < source.size();) {
+            if (source.substr(i, 2) == "{{" || source.substr(i, 2) == "}}") {
+                pattern += source[i];
+                i += 2;
+            } else if (source.substr(i, 7) == "{video}") {
+                // Insert the source stem literally: percent signs must not become frame tokens.
+                for (const char c : video_name) {
+                    pattern += c;
+                    if (c == '%')
+                        pattern += '%';
+                }
+                i += 7;
+            } else if (source[i] == '{' || source[i] == '}') {
+                error = LOC("video_extractor.naming_error_placeholder");
+                return false;
+            } else {
+                pattern += source[i++];
+            }
+        }
+        // Keep platform-specific filesystem limits with the existing writer. In particular,
+        // a UTF-8 byte limit would incorrectly reject valid Unicode names on Windows.
+        for (const int number : {1, std::numeric_limits<int>::max()}) {
+            const std::string stem = io::formatFrameFilenameStem(pattern, number);
+            bool invalid = stem.empty() || stem.find('\0') != std::string::npos || stem.find('/') != std::string::npos;
+#ifdef _WIN32
+            // The writer appends the image extension, so a trailing dot or space
+            // in the stem is internal to the final filename and is valid.
+            invalid |= std::any_of(stem.begin(), stem.end(), [](const unsigned char c) {
+                return c < 32 || std::string_view("<>:\"\\|?*").find(static_cast<char>(c)) != std::string_view::npos;
+            });
+            std::string base = stem.substr(0, stem.find('.'));
+            while (!base.empty() && base.back() == ' ')
+                base.pop_back();
+            for (char& c : base)
+                c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            const std::string_view suffix = base.size() >= 3 ? std::string_view(base).substr(3) : std::string_view{};
+            invalid |= base == "CON" || base == "PRN" || base == "AUX" || base == "NUL" ||
+                       base == "CONIN$" || base == "CONOUT$" ||
+                       ((base.starts_with("COM") || base.starts_with("LPT")) &&
+                        ((suffix.size() == 1 && suffix[0] >= '1' && suffix[0] <= '9') ||
+                         suffix == "\xc2\xb9" || suffix == "\xc2\xb2" || suffix == "\xc2\xb3"));
+#endif
+            if (invalid) {
+                error = LOC("video_extractor.naming_error_filename");
+                return false;
+            }
+        }
+        return true;
     }
 
     void VideoExtractorDialog::beginExtractionFromUi() {
@@ -1685,7 +1815,12 @@ namespace lfs::gui {
         params.scale = SCALE_VALUES[std::clamp(scale_selection_, 0, static_cast<int>(SCALE_VALUES.size() - 1))];
         params.custom_width = custom_width_;
         params.custom_height = custom_height_;
-        params.filename_pattern = filename_pattern_.data();
+        std::string naming_error;
+        if (!resolveFilenamePattern(params.filename_pattern, naming_error)) {
+            controls_dirty_ = true;
+            markContentDirty();
+            return;
+        }
         params.sharpness_enabled = sharpness_toggle_el_ && sharpness_toggle_el_->HasAttribute("checked");
         if (sharpness_algorithm_select_el_) {
             static constexpr io::SharpnessAlgorithm ALGO_MAP[] = {
@@ -1705,30 +1840,13 @@ namespace lfs::gui {
         params.convert_hdr_to_sdr = hdr_to_sdr_;
         params.rotation = rotation_deg_;
 
-        // Check if output folder already contains generated extraction files
-        if (std::filesystem::exists(output_dir_)) {
-            bool has_generated = false;
-            for (const auto& entry : std::filesystem::directory_iterator(output_dir_)) {
-                if (!entry.is_regular_file())
-                    continue;
-                const auto ext = entry.path().extension().string();
-                std::string ext_lower;
-                ext_lower.reserve(ext.size());
-                for (auto c : ext)
-                    ext_lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-                if (ext_lower == ".jpg" || ext_lower == ".jpeg" || ext_lower == ".png" ||
-                    entry.path().filename() == "extraction_metadata.json") {
-                    has_generated = true;
-                    break;
-                }
-            }
-            if (has_generated) {
-                pending_params_ = params;
-                pending_params_set_ = true;
-                if (overwrite_overlay_el_)
-                    overwrite_overlay_el_->SetClass("hidden", false);
-                return;
-            }
+        // Ask before replacing frames or metadata that an extraction with this naming wrote.
+        if (!generatedExtractionFiles(output_dir_, params.filename_pattern).empty()) {
+            pending_params_ = params;
+            pending_params_set_ = true;
+            if (overwrite_overlay_el_)
+                overwrite_overlay_el_->SetClass("hidden", false);
+            return;
         }
 
         stop_extraction_requested_.store(false);

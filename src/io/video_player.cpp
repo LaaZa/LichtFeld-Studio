@@ -7,6 +7,8 @@
 #include "core/path_utils.hpp"
 #include "hdr_libplacebo.hpp"
 #include "hdr_tonemap.hpp"
+#include "video/frame_color_range.hpp"
+#include "video/sws_packed_rgb.hpp"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -943,6 +945,8 @@ namespace lfs::io {
                 av_frame_unref(frame_);
                 const int receive_result = avcodec_receive_frame(codec_ctx_, frame_);
                 if (receive_result == 0) {
+                    video::restoreCuvidFullRange(frame_, codec_ctx_,
+                                                 fmt_ctx_->streams[video_stream_idx_]->codecpar);
                     return convertFrameToBuffer() ? DecodeResult::Frame : DecodeResult::Error;
                 }
                 if (receive_result == AVERROR_EOF)
@@ -1078,10 +1082,8 @@ namespace lfs::io {
                     return false;
                 }
                 decoded_frame_.data.resize(frame_size_);
-                uint8_t* dst_data[1] = {decoded_frame_.data.data()};
-                int dst_linesize[1] = {width_ * 3};
-                if (sws_scale(sws_ctx_, src_frame->data, src_frame->linesize, 0, src_height_,
-                              dst_data, dst_linesize) <= 0) {
+                if (scaleToPackedRgb24(sws_ctx_, src_frame->data, src_frame->linesize, src_height_,
+                                       decoded_frame_.data.data(), width_, height_, rgb_scratch_) <= 0) {
                     setError("Video color conversion failed");
                     decoded_frame_.data.clear();
                     return false;
@@ -1098,6 +1100,7 @@ namespace lfs::io {
         AVCodecContext* codec_ctx_ = nullptr;
         AVBufferRef* hw_device_ctx_ = nullptr;
         SwsContext* sws_ctx_ = nullptr;
+        std::vector<uint8_t> rgb_scratch_;
         AVFrame* frame_ = nullptr;
         AVFrame* sw_frame_ = nullptr;
         AVPacket* packet_ = nullptr;

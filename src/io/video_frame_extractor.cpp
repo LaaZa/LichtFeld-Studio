@@ -11,6 +11,8 @@
 #include "nvcodec_image_loader.hpp"
 #include "video/color_convert.cuh"
 #include "video/cuda_frame_handoff.hpp"
+#include "video/frame_color_range.hpp"
+#include "video/sws_packed_rgb.hpp"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -263,8 +265,11 @@ namespace lfs::io {
                 while (true) {
                     av_frame_unref(frame);
                     const int receive_result = avcodec_receive_frame(codec_context_, frame);
-                    if (receive_result == 0)
+                    if (receive_result == 0) {
+                        video::restoreCuvidFullRange(frame, codec_context_,
+                                                     format_context_->streams[stream_index_]->codecpar);
                         return DecoderPumpResult::Frame;
+                    }
                     if (receive_result == AVERROR_EOF)
                         return DecoderPumpResult::EndOfStream;
                     if (receive_result != AVERROR(EAGAIN)) {
@@ -706,77 +711,131 @@ namespace lfs::io {
         return true;
     }
 
-    std::string formatFrameFilenameStem(const std::string_view pattern, const int frame_number) {
-        const std::string_view effective_pattern = pattern.empty() ? std::string_view{"frame_%d"} : pattern;
-        std::string out;
-        out.reserve(effective_pattern.size() + 8);
-
-        bool consumed_value = false;
-        for (size_t i = 0; i < effective_pattern.size(); ++i) {
-            if (effective_pattern[i] != '%' || i + 1 >= effective_pattern.size()) {
-                out.push_back(effective_pattern[i]);
-                continue;
-            }
-
-            if (effective_pattern[i + 1] == '%') {
-                out.push_back('%');
-                ++i;
-                continue;
-            }
-
-            size_t j = i + 1;
+    namespace {
+        // A frame filename pattern as literal text and frame-number fields.
+        struct FrameNameSegment {
+            std::string literal;
+            bool number = false;
             int min_width = 0;
-            bool found_value = false;
+        };
 
-            if (effective_pattern[j] == 'd') {
-                found_value = true;
-            } else if (effective_pattern[j] == '0') {
-                size_t zero_count = 0;
-                while (j < effective_pattern.size() && effective_pattern[j] == '0') {
-                    ++zero_count;
-                    ++j;
+        std::vector<FrameNameSegment> parseFrameFilenamePattern(const std::string_view pattern) {
+            const std::string_view effective_pattern = pattern.empty() ? std::string_view{"frame_%d"} : pattern;
+            std::vector<FrameNameSegment> segments;
+            const auto literal = [&](const char c) {
+                if (segments.empty() || segments.back().number)
+                    segments.emplace_back();
+                segments.back().literal.push_back(c);
+            };
+
+            bool consumed_value = false;
+            for (size_t i = 0; i < effective_pattern.size(); ++i) {
+                if (effective_pattern[i] != '%' || i + 1 >= effective_pattern.size()) {
+                    literal(effective_pattern[i]);
+                    continue;
                 }
 
-                int parsed_width = 0;
-                while (j < effective_pattern.size() && std::isdigit(static_cast<unsigned char>(effective_pattern[j]))) {
-                    if (parsed_width < MAX_FILENAME_FRAME_WIDTH)
-                        parsed_width = std::min(parsed_width * 10 + (effective_pattern[j] - '0'),
-                                                MAX_FILENAME_FRAME_WIDTH);
-                    ++j;
+                if (effective_pattern[i + 1] == '%') {
+                    literal('%');
+                    ++i;
+                    continue;
                 }
 
-                const bool has_d_suffix = j < effective_pattern.size() && effective_pattern[j] == 'd';
-                const bool has_legacy_zero_run =
-                    parsed_width == 0 && zero_count > 1 &&
-                    (j >= effective_pattern.size() ||
-                     !std::isalpha(static_cast<unsigned char>(effective_pattern[j])));
-                found_value = has_d_suffix || has_legacy_zero_run;
+                size_t j = i + 1;
+                int min_width = 0;
+                bool found_value = false;
+
+                if (effective_pattern[j] == 'd') {
+                    found_value = true;
+                } else if (effective_pattern[j] == '0') {
+                    size_t zero_count = 0;
+                    while (j < effective_pattern.size() && effective_pattern[j] == '0') {
+                        ++zero_count;
+                        ++j;
+                    }
+
+                    int parsed_width = 0;
+                    while (j < effective_pattern.size() && std::isdigit(static_cast<unsigned char>(effective_pattern[j]))) {
+                        if (parsed_width < MAX_FILENAME_FRAME_WIDTH)
+                            parsed_width = std::min(parsed_width * 10 + (effective_pattern[j] - '0'),
+                                                    MAX_FILENAME_FRAME_WIDTH);
+                        ++j;
+                    }
+
+                    const bool has_d_suffix = j < effective_pattern.size() && effective_pattern[j] == 'd';
+                    const bool has_legacy_zero_run =
+                        parsed_width == 0 && zero_count > 1 &&
+                        (j >= effective_pattern.size() ||
+                         !std::isalpha(static_cast<unsigned char>(effective_pattern[j])));
+                    found_value = has_d_suffix || has_legacy_zero_run;
+
+                    if (found_value) {
+                        min_width = parsed_width > 0
+                                        ? parsed_width
+                                        : static_cast<int>(has_legacy_zero_run || zero_count > 1
+                                                               ? std::min<size_t>(zero_count + 1, MAX_FILENAME_FRAME_WIDTH)
+                                                               : 0);
+                        if (!has_d_suffix)
+                            --j;
+                    }
+                }
 
                 if (found_value) {
-                    min_width = parsed_width > 0
-                                    ? parsed_width
-                                    : static_cast<int>(has_legacy_zero_run || zero_count > 1
-                                                           ? std::min<size_t>(zero_count + 1, MAX_FILENAME_FRAME_WIDTH)
-                                                           : 0);
-                    if (!has_d_suffix)
-                        --j;
+                    segments.push_back({.number = true, .min_width = min_width});
+                    i = j;
+                    consumed_value = true;
+                    continue;
                 }
+
+                literal('%');
             }
 
-            if (found_value) {
-                appendFrameNumber(out, frame_number, min_width);
-                i = j;
-                consumed_value = true;
-                continue;
-            }
-
-            out.push_back('%');
+            if (!consumed_value)
+                segments.push_back({.number = true});
+            return segments;
         }
 
-        if (!consumed_value)
-            appendFrameNumber(out, frame_number, 0);
+        // Number fields accept any digit run that is not all zeros: earlier
+        // extractions may have used another padding width.
+        bool matchFrameNameSegments(const std::vector<FrameNameSegment>& segments, const size_t index,
+                                    const std::string_view name, const size_t pos) {
+            if (index == segments.size())
+                return pos == name.size();
+            const auto& segment = segments[index];
+            if (!segment.number) {
+                return name.substr(pos, segment.literal.size()) == segment.literal &&
+                       matchFrameNameSegments(segments, index + 1, name, pos + segment.literal.size());
+            }
+            bool nonzero = false;
+            for (size_t end = pos; end < name.size() && std::isdigit(static_cast<unsigned char>(name[end]));) {
+                nonzero |= name[end] != '0';
+                ++end;
+                if (nonzero && matchFrameNameSegments(segments, index + 1, name, end))
+                    return true;
+            }
+            return false;
+        }
+    } // namespace
 
+    std::string formatFrameFilenameStem(const std::string_view pattern, const int frame_number) {
+        std::string out;
+        out.reserve(pattern.size() + 8);
+        for (const auto& segment : parseFrameFilenamePattern(pattern)) {
+            if (segment.number)
+                appendFrameNumber(out, frame_number, segment.min_width);
+            else
+                out += segment.literal;
+        }
         return out;
+    }
+
+    bool isGeneratedFrameFilename(const std::string_view pattern, const std::string_view filename) {
+        constexpr std::string_view png = ".png";
+        constexpr std::string_view jpg = ".jpg";
+        if (!filename.ends_with(png) && !filename.ends_with(jpg))
+            return false;
+        return matchFrameNameSegments(parseFrameFilenamePattern(pattern), 0,
+                                      filename.substr(0, filename.size() - png.size()), 0);
     }
 
     class VideoFrameExtractor::Impl {
@@ -799,6 +858,7 @@ namespace lfs::io {
             uint8_t* gpu_rotated_buffer = nullptr;
             uint8_t* cpu_contiguous_buffer = nullptr;
             std::vector<uint8_t> rot_buf;
+            std::vector<uint8_t> rgb_scratch;
             std::unique_ptr<NvCodecImageLoader> nvcodec;
             bool using_hw_decode = false;
 
@@ -1325,10 +1385,8 @@ namespace lfs::io {
                         error = "Failed to configure video color conversion";
                         return false;
                     }
-                    uint8_t* dst_data[4] = {cpu_contiguous_buffer, nullptr, nullptr, nullptr};
-                    int dst_linesize[4] = {out_width * 3, 0, 0, 0};
-                    if (sws_scale(sws_ctx, source->data, source->linesize, 0,
-                                  source_height, dst_data, dst_linesize) <= 0) {
+                    if (scaleToPackedRgb24(sws_ctx, source->data, source->linesize, source_height,
+                                           cpu_contiguous_buffer, out_width, out_height, rgb_scratch) <= 0) {
                         error = "Video color conversion failed";
                         return false;
                     }
@@ -1591,7 +1649,10 @@ namespace lfs::io {
                         const int uv_pitch = hw_frame->linesize[1];
 
                         video::nv12ToRgbCuda(y_plane, uv_plane, gpu_rgb_buffer,
-                                             src_width, src_height, y_pitch, uv_pitch, nullptr);
+                                             src_width, src_height, y_pitch, uv_pitch, nullptr,
+                                             hw_frame->color_range == AVCOL_RANGE_JPEG ||
+                                                 (hw_frame->color_range == AVCOL_RANGE_UNSPECIFIED &&
+                                                  source_range == AVCOL_RANGE_JPEG));
                         requireCudaSuccess(cudaGetLastError(),
                                            "CUDA NV12-to-RGB conversion failed");
 
