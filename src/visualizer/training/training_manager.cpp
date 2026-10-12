@@ -1774,6 +1774,15 @@ namespace lfs::vis {
             LOG_INFO("Training finished: iter={}, loss={:.6f}, time={:.1f}s",
                      completion.iteration, completion.final_loss, completion.elapsed_seconds);
             completion_pending_.store(false, std::memory_order_release);
+            std::string error_message_key;
+            if (completion.typed_error && !completion.typed_error->frames().empty()) {
+                for (const auto& field : completion.typed_error->frames().front().fields.entries()) {
+                    if (field.key == "message_key") {
+                        if (const auto* key = std::get_if<std::string>(&field.value))
+                            error_message_key = *key;
+                    }
+                }
+            }
             state::TrainingCompleted{
                 .iteration = completion.iteration,
                 .final_loss = completion.final_loss,
@@ -1785,7 +1794,8 @@ namespace lfs::vis {
                 .error_info = completion.typed_error
                                   ? std::optional(core::to_wire_error(*completion.typed_error))
                                   : std::nullopt,
-                .suppress_notification = suppress_completion_notification_.exchange(false, std::memory_order_relaxed)}
+                .suppress_notification = suppress_completion_notification_.exchange(false, std::memory_order_relaxed),
+                .error_message_key = std::move(error_message_key)}
                 .emit();
         };
 
@@ -2591,6 +2601,17 @@ namespace lfs::vis {
         return !hasTrainer() || (getState() == TrainingState::Ready && getCurrentIteration() == 0);
     }
 
+    bool TrainerManager::canChangeStrategy(const std::string_view strategy) const {
+        if (!trainer_)
+            return true;
+        const auto canonical = core::param::canonical_strategy_name(strategy);
+        if (trainer_->isInitialized())
+            return canonical == trainer_->get_strategy().strategy_type();
+        if (isDatasetEditable())
+            return true;
+        return canonical == core::param::canonical_strategy_name(trainer_->getParams().optimization.strategy);
+    }
+
     lfs::core::param::TrainingParameters TrainerManager::getEditableTrainingParams(
         const ParameterManager& parameter_manager) const {
         const auto& configured_dataset = parameter_manager.getDatasetConfig();
@@ -2635,6 +2656,12 @@ namespace lfs::vis {
             params.dataset = pending_dataset_params_;
             params.optimization = pending_opt_params_;
         }
+
+        // A different preset belongs to the next run. The current strategy owns
+        // optimizer/refinement state that cannot consume another strategy's settings.
+        const bool first_start = !trainer_->isInitialized() && getState() == TrainingState::Starting;
+        if (!first_start && !canChangeStrategy(params.optimization.strategy))
+            return;
 
         const bool evaluation_split_changed =
             previous_params.optimization.holds_out_eval_images() != params.optimization.holds_out_eval_images() ||

@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -1925,6 +1926,177 @@ TEST_F(GsplatRasterizerTest, GeometryAnchorsAndDepthNormalsFollowCameraRays) {
         if (equi)
             EXPECT_EQ(stats.ptr<float>()[kernels::normal_consistency_slots::kCount], float(w * (h - 2)));
     }
+}
+
+class DepthAnchorSetupTest : public ::testing::Test {
+protected:
+    std::filesystem::path directory;
+    Tensor means;
+
+    void SetUp() override {
+        directory = std::filesystem::temp_directory_path() /
+                    ("lfs_anchor_setup_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(directory);
+        means = Tensor::from_vector({0.f, 0.f, 2.f}, {1, 3}, Device::CUDA);
+    }
+
+    void TearDown() override { std::filesystem::remove_all(directory); }
+
+    std::shared_ptr<Camera> camera(const std::filesystem::path& depth_path) {
+        auto rotation = Tensor::from_vector({1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f}, {3, 3}, Device::CPU);
+        auto cam = std::make_shared<Camera>(
+            rotation, Tensor::zeros({3}, Device::CPU), 50, 50, 32, 24, Tensor(), Tensor(),
+            lfs::core::CameraModelType::PINHOLE, "view.png", std::filesystem::path{}, std::filesystem::path{},
+            64, 48, 0, 0, depth_path);
+        cam->set_image_dimensions(64, 48);
+        return cam;
+    }
+};
+
+TEST_F(DepthAnchorSetupTest, FingerprintTracksDepthContentWithPreservedMetadata) {
+    const auto path = directory / "view.png";
+    std::vector<std::uint16_t> prior(64 * 48, 100);
+    ASSERT_TRUE(save_png(path, prior.data(), 64, 48, 1, 16, 0));
+    const auto cam = camera(path);
+    const auto original = computeAnchorFingerprint(means, {cam});
+    const auto size = std::filesystem::file_size(path);
+    const auto mtime = std::filesystem::last_write_time(path);
+    prior[100] = 200;
+    ASSERT_TRUE(save_png(path, prior.data(), 64, 48, 1, 16, 0));
+    std::filesystem::last_write_time(path, mtime);
+    ASSERT_EQ(std::filesystem::file_size(path), size);
+    EXPECT_NE(computeAnchorFingerprint(means, {cam}), original);
+}
+
+TEST_F(DepthAnchorSetupTest, FingerprintTracksObservedGeometry) {
+    const auto path = directory / "view.png";
+    std::ofstream(path) << "depth";
+    const auto cam = camera(path);
+    cam->set_sfm_observations({{0.f, 0.f, 0.f, 0.f, 2.f}});
+    const auto original = computeAnchorFingerprint(means, {cam});
+    cam->set_sfm_observations({{0.f, 0.f, 0.f, 0.f, 4.f}});
+    EXPECT_NE(computeAnchorFingerprint(means, {cam}), original);
+}
+
+TEST_F(DepthAnchorSetupTest, FingerprintTracksSeedGeometryAndPreservesDeviceParity) {
+    const auto path = directory / "view.png";
+    std::ofstream(path) << "depth";
+    const auto cam = camera(path);
+    const auto original = computeAnchorFingerprint(means, {cam});
+    EXPECT_EQ(computeAnchorFingerprint(means.cpu(), {cam}), original);
+    const auto changed = Tensor::from_vector({0.f, 0.f, 4.f}, {1, 3}, Device::CUDA);
+    const auto sidecar = depthAnchorSidecarPath({cam});
+    ASSERT_TRUE(writeDepthAnchorSidecar(sidecar, {}, original));
+    EXPECT_NE(computeAnchorFingerprint(changed, {cam}), original);
+    EXPECT_FALSE(readDepthAnchorSidecar(sidecar, computeAnchorFingerprint(changed, {cam})));
+    EXPECT_TRUE(readDepthAnchorSidecar(sidecar, computeAnchorFingerprint(means, {cam})));
+}
+
+TEST_F(DepthAnchorSetupTest, UnreadableDepthCannotReuseOrPublishSidecar) {
+    const auto path = directory / "missing.png";
+    const auto cam = camera(path);
+    const auto fingerprint = computeAnchorFingerprint(means, {cam});
+    const auto sidecar = depthAnchorSidecarPath({cam});
+    EXPECT_FALSE(writeDepthAnchorSidecar(sidecar, {}, fingerprint));
+    std::ofstream(sidecar) << R"({"schema_version":0,"fingerprint":"0000000000000000","anchors":{}})";
+    EXPECT_FALSE(readDepthAnchorSidecar(sidecar, fingerprint));
+}
+
+TEST_F(DepthAnchorSetupTest, FingerprintAndSidecarPreserveUnchangedInputs) {
+    const auto path = directory / "view.png";
+    std::ofstream(path) << "depth";
+    const auto cam = camera(path);
+    const auto original = computeAnchorFingerprint(means, {cam});
+    EXPECT_EQ(computeAnchorFingerprint(means, {nullptr, camera({}), cam}), original);
+    EXPECT_EQ(computeAnchorFingerprint(means, {camera(path)}), original);
+    const auto copy = directory / "copy.png";
+    std::filesystem::copy_file(path, copy);
+    std::filesystem::last_write_time(copy, std::filesystem::last_write_time(path));
+    EXPECT_EQ(computeAnchorFingerprint(means, {camera(copy)}), original);
+
+    kernels::DepthAnchor anchor;
+    anchor.valid = true;
+    anchor.model = 1;
+    anchor.scale = 3.25f;
+    anchor.shift = 0.5f;
+    anchor.floor = 0.01f;
+    anchor.corr = 0.98f;
+    anchor.samples = 250;
+    anchor.depth = {true, 3.25f, 0.5f, 0.98f, 250};
+    const auto sidecar = depthAnchorSidecarPath({cam});
+    ASSERT_TRUE(writeDepthAnchorSidecar(sidecar, {{cam->image_name(), anchor}}, original));
+    const auto cached = readDepthAnchorSidecar(sidecar, original);
+    ASSERT_TRUE(cached);
+    ASSERT_EQ(cached->size(), 1);
+    const auto& actual = cached->at(cam->image_name());
+    EXPECT_EQ(actual.valid, anchor.valid);
+    EXPECT_EQ(actual.model, anchor.model);
+    EXPECT_EQ(actual.scale, anchor.scale);
+    EXPECT_EQ(actual.shift, anchor.shift);
+    EXPECT_EQ(actual.floor, anchor.floor);
+    EXPECT_EQ(actual.corr, anchor.corr);
+    EXPECT_EQ(actual.samples, anchor.samples);
+    EXPECT_EQ(actual.depth.valid, anchor.depth.valid);
+    EXPECT_EQ(actual.depth.scale, anchor.depth.scale);
+    EXPECT_EQ(actual.depth.shift, anchor.depth.shift);
+    EXPECT_EQ(actual.depth.corr, anchor.depth.corr);
+    EXPECT_EQ(actual.depth.samples, anchor.depth.samples);
+    auto mismatch = original;
+    ++mismatch.hash;
+    EXPECT_FALSE(readDepthAnchorSidecar(sidecar, mismatch));
+    mismatch = original;
+    ++mismatch.version;
+    EXPECT_FALSE(readDepthAnchorSidecar(sidecar, mismatch));
+    std::ofstream(sidecar) << "{invalid";
+    EXPECT_FALSE(readDepthAnchorSidecar(sidecar, original));
+}
+
+TEST_F(DepthAnchorSetupTest, FingerprintStillTracksMetadataAndPose) {
+    const auto path = directory / "view.png";
+    std::ofstream(path) << "depth";
+    const auto cam = camera(path);
+    const auto original = computeAnchorFingerprint(means, {cam});
+    const auto mtime = std::filesystem::last_write_time(path);
+    std::filesystem::last_write_time(path, mtime + std::chrono::seconds(1));
+    EXPECT_NE(computeAnchorFingerprint(means, {cam}), original);
+    std::filesystem::last_write_time(path, mtime);
+    cam->translate(Tensor::from_vector({1.f, 0.f, 0.f}, {3}, Device::CPU));
+    EXPECT_NE(computeAnchorFingerprint(means, {cam}), original);
+}
+
+TEST_F(DepthAnchorSetupTest, DamagedDepthPropagatesDecodeError) {
+    const auto path = directory / "view.tiff";
+    std::ofstream(path) << "not an image\n";
+    auto cam = camera(path);
+    // The caller must receive the decoder error after the fit workers have joined.
+    EXPECT_THROW((void)computeRawDepthAnchors(means, {cam}, -1, 0), std::exception);
+}
+
+TEST_F(DepthAnchorSetupTest, ProgressFailurePropagatesWithIdleWorkers) {
+    const auto path = directory / "view.png";
+    std::vector<std::uint16_t> prior(64 * 48, 0);
+    ASSERT_TRUE(save_png(path, prior.data(), 64, 48, 1, 16, 1));
+    auto cam = camera(path);
+    EXPECT_THROW((void)computeRawDepthAnchors(means, {cam}, -1, 0,
+                                              [](std::size_t, std::size_t) { throw std::runtime_error("progress failed"); }),
+                 std::runtime_error);
+}
+
+TEST_F(DepthAnchorSetupTest, MissingAndZeroDepthRemainEmpty) {
+    EXPECT_TRUE(computeRawDepthAnchors(means, {nullptr, camera({})}, -1, 0).empty());
+    const auto path = directory / "view.png";
+    std::vector<std::uint16_t> prior(64 * 48, 0);
+    ASSERT_TRUE(save_png(path, prior.data(), 64, 48, 1, 16, 1));
+    std::size_t calls = 0;
+    EXPECT_TRUE(computeRawDepthAnchors(means, {nullptr, camera({}), camera(path)}, -1, 0,
+                                       [&](std::size_t completed, std::size_t total) {
+                                           EXPECT_EQ(completed, 1);
+                                           EXPECT_EQ(total, 1);
+                                           ++calls;
+                                       })
+                    .empty());
+    EXPECT_EQ(calls, 1);
+    EXPECT_TRUE(computeRawDepthAnchors(Tensor(), {camera(path)}, -1, 0).empty());
 }
 
 // The anchor must come from the surface the camera sees. The sparse cloud also holds points behind that surface on

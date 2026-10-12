@@ -1,4 +1,6 @@
 {
+  "training.reset_before_strategy_change": "Zresetuj trening przed zmianą strategii.",
+  "io.no_finite_seed_points": "Chmura punktów nie zawiera punktów początkowych o skończonych współrzędnych. Zostanie użyta losowa inicjalizacja.",
   "ui.vram_window_1m": "1 min",
   "ui.vram_process_nvml_tooltip": "Pamięć GPU procesu zgłaszana przez system operacyjny lub sterownik GPU.",
   "ui.vram_process_unavailable_tooltip": "Pamięć GPU procesu jest niedostępna. Użycie urządzenia obejmuje inne aplikacje.",
@@ -711,6 +713,12 @@
   },
   "rendering": "Renderowanie",
   "scene": {
+    "summary_model_one": "{} model",
+    "summary_model_few": "{} modele",
+    "summary_model_other": "{} modeli",
+    "summary_node_one": "{} węzeł",
+    "summary_node_few": "{} węzły",
+    "summary_node_other": "{} węzłów",
     "add_ply": "Dodaj PLY...",
     "add_group": "Dodaj Grupę",
     "add_group_ellipsis": "Dodaj Grupę...",
@@ -949,6 +957,16 @@
     "input": "Sterowanie",
     "key_bindings": "Przypisania klawiszy",
     "camera_navigation": "Nawigacja kamery",
+    "new_project_navigation_up": "Pion dla nowych projektów",
+    "new_project_navigation_help": "Dotyczy tylko nowych projektów. Istniejące projekty zachowują zapisane ustawienia.",
+    "new_project_align_grid": "Wyrównaj siatkę w nowych projektach",
+    "navigation_project_hint": "Zapisz projekt, aby zachować wybór. Współrzędne danych pozostają bez zmian.",
+    "navigation_up_axis": "Oś pionowa",
+    "navigation_up_legacy_y": "Y-up (domyślnie)",
+    "navigation_up_data_z": "+Z w górę (współrzędne danych)",
+    "navigation_up_help": "Zapisywane w projekcie. Zmienia tylko nawigację; współrzędne i skala danych pozostają bez zmian.",
+    "align_navigation_grid": "Wyrównaj siatkę do pionu",
+    "align_grid_short": "Wyrównaj",
     "navigation_mode": "Tryb nawigacji",
     "zoom_speed": "Prędkość powiększania",
     "zoom_speed_tooltip": "Domyślna prędkość przybliżania kamery kółkiem myszy.",
@@ -1366,9 +1384,9 @@
         "custom": "Ostatnio załadowane niestandardowe HDRI"
       },
       "grid_plane": {
-        "yz": "Pokaż siatkę na płaszczyźnie YZ (widok z prawej)",
-        "xz": "Pokaż siatkę na płaszczyźnie XZ (widok z góry)",
-        "xy": "Pokaż siatkę na płaszczyźnie XY (widok z przodu)"
+        "yz": "Pokaż siatkę na płaszczyźnie YZ",
+        "xz": "Pokaż siatkę na płaszczyźnie XZ",
+        "xy": "Pokaż siatkę na płaszczyźnie XY"
       },
       "sh_degree": {
         "0": "Tylko rozpraszanie — brak oświetlenia zależnego od widoku",
@@ -2097,6 +2115,8 @@
     "strategy_default": "Domyślny",
     "split": "Podział:",
     "mcp_name": "MCP",
+    "ui_fps_tooltip": "Liczba wyświetlanych klatek interfejsu na sekundę.",
+    "view_fps_tooltip": "Liczba renderowanych klatek widoku 3D na sekundę. Statyczny widok może pokazywać 0, gdy interfejs nadal reaguje.",
     "ui": "UI",
     "view": "Widok"
   },
@@ -2430,9 +2450,9 @@
     "solid_color": "Jednolity kolor",
     "equirectangular_hdri": "HDRI ekwiprostokątne",
     "off": "Wył.",
-    "grid_plane_yz": "YZ (prawa)",
-    "grid_plane_xz": "XZ (góra)",
-    "grid_plane_xy": "XY (przód)",
+    "grid_plane_yz": "YZ",
+    "grid_plane_xz": "XZ",
+    "grid_plane_xy": "XY",
     "psnr": "PSNR",
     "psnr_ssim": "PSNR + SSIM",
     "manual": "Ręcznie",
@@ -2676,12 +2696,13 @@
     "right_click_to_add": "Kliknij prawym przyciskiem, aby dodać...",
     "training_complete": "Trening Ukończony",
     "training_stopped": "Trening Zatrzymany",
+    "training_stopped_body": "Użytkownik zatrzymał trening na iteracji {}.\n\nZapisz projekt, aby zachować ten stan. Otwórz ponownie zapisany projekt, aby wznowić trening.",
     "training_error": "Błąd Treningu",
     "param_manager_unavailable": "Menedżer parametrów niedostępny",
     "failed_to_load_params": "Nie udało się załadować parametrów:",
-    "err_distorted_images": "Wykryto zniekształcone obrazy. Włącz --gut lub --undistort, aby trenować z kamerami ze zniekształceniami.",
+    "err_distorted_images": "Wykryto zniekształcone obrazy. Włącz GUT lub korekcję zniekształceń w panelu treningu, aby trenować z kamerami ze zniekształceniami.",
     "err_ortho_not_supported": "Trening z ortograficznym modelem kamery nie jest jeszcze obsługiwany.",
-    "err_non_pinhole": "Włącz --gut lub --undistort, aby trenować z kamerami innymi niż pinhole."
+    "err_non_pinhole": "Włącz GUT lub korekcję zniekształceń w panelu treningu, aby trenować z kamerami o modelu innym niż otworkowy."
   },
   "projects.gallery.sidebar.title": "Galeria",
   "projects.gallery.sidebar.refresh": "Sprawdź galerię",

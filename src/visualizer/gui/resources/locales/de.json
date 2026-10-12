@@ -1,4 +1,6 @@
 {
+  "training.reset_before_strategy_change": "Setzen Sie das Training zurück, bevor Sie die Strategie ändern.",
+  "io.no_finite_seed_points": "Die Punktwolke enthält keine endlichen Ausgangspunkte. Die Initialisierung erfolgt zufällig.",
   "ui.vram_window_1m": "1 min",
   "ui.vram_process_nvml_tooltip": "GPU-Speicher des Prozesses laut Betriebssystem oder GPU-Treiber.",
   "ui.vram_process_unavailable_tooltip": "GPU-Speicher des Prozesses ist nicht verfügbar. Die Gerätenutzung umfasst andere Anwendungen.",
@@ -711,6 +713,12 @@
   },
   "rendering": "Rendering",
   "scene": {
+    "summary_model_one": "{} Modell",
+    "summary_model_few": "{} Modelle",
+    "summary_model_other": "{} Modelle",
+    "summary_node_one": "{} Knoten",
+    "summary_node_few": "{} Knoten",
+    "summary_node_other": "{} Knoten",
     "add_ply": "PLY hinzufügen...",
     "add_group": "Gruppe hinzufügen",
     "add_group_ellipsis": "Gruppe hinzufügen...",
@@ -949,6 +957,16 @@
     "input": "Eingabe",
     "key_bindings": "Tastenbelegung",
     "camera_navigation": "Kameranavigation",
+    "new_project_navigation_up": "Vertikale für neue Projekte",
+    "new_project_navigation_help": "Gilt nur für neue Projekte. Bestehende Projekte behalten ihre gespeicherten Einstellungen.",
+    "new_project_align_grid": "Raster in neuen Projekten ausrichten",
+    "navigation_project_hint": "Projekt speichern, um die Auswahl zu behalten. Datenkoordinaten bleiben unverändert.",
+    "navigation_up_axis": "Vertikalachse",
+    "navigation_up_legacy_y": "Y-up (Standard)",
+    "navigation_up_data_z": "+Z oben (Datenkoordinaten)",
+    "navigation_up_help": "Wird im Projekt gespeichert. Ändert nur die Navigation; Datenkoordinaten und Maßstab bleiben unverändert.",
+    "align_navigation_grid": "Raster an Vertikale ausrichten",
+    "align_grid_short": "Ausrichten",
     "navigation_mode": "Navigationsmodus",
     "zoom_speed": "Zoomgeschwindigkeit",
     "zoom_speed_tooltip": "Standardgeschwindigkeit für das Zoomen der Kamera mit dem Mausrad.",
@@ -1366,9 +1384,9 @@
         "custom": "Zuletzt geladenes benutzerdefiniertes HDRI"
       },
       "grid_plane": {
-        "yz": "Gitter in der YZ-Ebene anzeigen (Rechte Ansicht)",
-        "xz": "Gitter in der XZ-Ebene anzeigen (Draufsicht)",
-        "xy": "Gitter in der XY-Ebene anzeigen (Vorderansicht)"
+        "yz": "Gitter in der YZ-Ebene anzeigen",
+        "xz": "Gitter in der XZ-Ebene anzeigen",
+        "xy": "Gitter in der XY-Ebene anzeigen"
       },
       "sh_degree": {
         "0": "Nur diffus — keine blickrichtungsabhängige Beleuchtung",
@@ -2097,6 +2115,8 @@
     "strategy_default": "Standard",
     "split": "Teilung:",
     "mcp_name": "MCP",
+    "ui_fps_tooltip": "Pro Sekunde angezeigte Benutzeroberflächen-Frames.",
+    "view_fps_tooltip": "Pro Sekunde gerenderte Frames der 3D-Ansicht. Eine statische Ansicht kann 0 anzeigen, während die Oberfläche weiterhin reagiert.",
     "ui": "UI",
     "view": "Ansicht"
   },
@@ -2430,9 +2450,9 @@
     "solid_color": "Einheitliche Farbe",
     "equirectangular_hdri": "Equirectangular-HDRI",
     "off": "Aus",
-    "grid_plane_yz": "YZ (Rechts)",
-    "grid_plane_xz": "XZ (Oben)",
-    "grid_plane_xy": "XY (Vorne)",
+    "grid_plane_yz": "YZ",
+    "grid_plane_xz": "XZ",
+    "grid_plane_xy": "XY",
     "psnr": "PSNR",
     "psnr_ssim": "PSNR + SSIM",
     "manual": "Manuell",
@@ -2676,12 +2696,13 @@
     "right_click_to_add": "Rechtsklick zum Hinzufügen...",
     "training_complete": "Training abgeschlossen",
     "training_stopped": "Training gestoppt",
+    "training_stopped_body": "Training wurde bei Iteration {} vom Benutzer gestoppt.\n\nSpeichern Sie das Projekt, um diesen Zustand zu behalten. Öffnen Sie das gespeicherte Projekt erneut, um das Training fortzusetzen.",
     "training_error": "Trainingsfehler",
     "param_manager_unavailable": "ParameterManager nicht verfügbar",
     "failed_to_load_params": "Parameter laden fehlgeschlagen:",
-    "err_distorted_images": "Verzerrte Bilder erkannt. Aktivieren Sie --gut oder --undistort, um mit verzerrten Kameras zu trainieren.",
+    "err_distorted_images": "Verzerrte Bilder erkannt. Aktivieren Sie GUT oder Entzerren im Trainingspanel, um mit Kameras mit Verzerrung zu trainieren.",
     "err_ortho_not_supported": "Training mit orthographischem Kameramodell wird noch nicht unterstützt.",
-    "err_non_pinhole": "Aktivieren Sie --gut oder --undistort, um mit Nicht-Pinhole-Kameras zu trainieren."
+    "err_non_pinhole": "Aktivieren Sie GUT oder Entzerren im Trainingspanel, um mit Kameras ohne Lochkameramodell zu trainieren."
   },
   "projects.gallery.sidebar.title": "Galerie",
   "projects.gallery.sidebar.refresh": "Galerie prüfen",

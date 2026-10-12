@@ -389,12 +389,14 @@ namespace lfs::io {
             return success;
         }
 
-        void write_jpeg_to_file(const std::filesystem::path& path, const std::vector<uint8_t>& data) {
+        bool write_jpeg_to_file(const std::filesystem::path& path, const std::vector<uint8_t>& data) {
             std::ofstream file(path, std::ios::binary);
-            if (file) {
-                file.write(reinterpret_cast<const char*>(data.data()),
-                           static_cast<std::streamsize>(data.size()));
-            }
+            if (!file)
+                return false;
+            file.write(reinterpret_cast<const char*>(data.data()),
+                       static_cast<std::streamsize>(data.size()));
+            file.close();
+            return static_cast<bool>(file);
         }
 
         const char* get_hw_decoder_name(AVCodecID codec_id) {
@@ -406,7 +408,9 @@ namespace lfs::io {
             case AV_CODEC_ID_VP8:
                 return "vp8_cuvid";
             case AV_CODEC_ID_VP9:
-                return "vp9_cuvid";
+                // Keep FFmpeg's VP9 presentation timing, including show-existing frames,
+                // while using its CUDA hardware acceleration instead of the CUVID parser.
+                return "vp9";
             case AV_CODEC_ID_AV1:
                 return "av1_cuvid";
             case AV_CODEC_ID_MPEG1VIDEO:
@@ -426,6 +430,21 @@ namespace lfs::io {
             for (const AVPixelFormat* p = pix_fmts; *p != -1; p++) {
                 if (*p == AV_PIX_FMT_CUDA)
                     return *p;
+            }
+            return AV_PIX_FMT_NONE;
+        }
+
+        AVPixelFormat get_vp9_format(AVCodecContext* context, const AVPixelFormat* formats) {
+            const auto hardware_format = get_hw_format(context, formats);
+            auto& using_hardware = *static_cast<bool*>(context->opaque);
+            using_hardware = hardware_format != AV_PIX_FMT_NONE;
+            if (using_hardware)
+                return hardware_format;
+            // Native decoders negotiate hardware support on the first frame, not at open.
+            for (const AVPixelFormat* format = formats; *format != AV_PIX_FMT_NONE; ++format) {
+                const AVPixFmtDescriptor* descriptor = av_pix_fmt_desc_get(*format);
+                if (descriptor && !(descriptor->flags & AV_PIX_FMT_FLAG_HWACCEL))
+                    return *format;
             }
             return AV_PIX_FMT_NONE;
         }
@@ -1029,6 +1048,11 @@ namespace lfs::io {
                             return false;
                         }
                         codec_ctx->get_format = get_hw_format;
+                        if (codec_id == AV_CODEC_ID_VP9) {
+                            codec_ctx->pkt_timebase = video_stream->time_base;
+                            codec_ctx->opaque = &using_hw_decode;
+                            codec_ctx->get_format = get_vp9_format;
+                        }
                     } else {
                         const unsigned int hardware_threads = std::max(1U, std::thread::hardware_concurrency());
                         codec_ctx->thread_count = std::min(MAX_SW_DECODE_THREADS,
@@ -1072,6 +1096,10 @@ namespace lfs::io {
                     video_fps = validFrameRate(video_stream->r_frame_rate);
                 if (video_fps <= 0.0)
                     video_fps = 30.0;
+                // Source numbers use the timestamp grid, not the average cadence of a VFR stream.
+                double source_frame_fps = validFrameRate(video_stream->r_frame_rate);
+                if (source_frame_fps <= 0.0)
+                    source_frame_fps = video_fps;
                 double video_duration = validDurationSeconds(fmt_ctx->duration, AVRational{1, AV_TIME_BASE});
                 if (video_duration <= 0.0)
                     video_duration = validDurationSeconds(video_stream->duration, video_stream->time_base);
@@ -1490,7 +1518,10 @@ namespace lfs::io {
                     for (size_t i = 0; i < encoded.size(); i++) {
                         if (!encoded[i].empty()) {
                             const auto jpeg_write_started = std::chrono::steady_clock::now();
-                            write_jpeg_to_file(batch_filenames[i], encoded[i]);
+                            if (!write_jpeg_to_file(batch_filenames[i], encoded[i])) {
+                                throw std::runtime_error("Failed to write extracted frame: " +
+                                                         lfs::core::path_to_utf8(batch_filenames[i]));
+                            }
                             jpeg_write_seconds += elapsedSeconds(jpeg_write_started);
                             ++written_count;
                             if (params.generate_metadata && i < batch_meta.size()) {
@@ -1518,7 +1549,7 @@ namespace lfs::io {
 
                 const auto source_frame_for_time = [&](const double frame_time) {
                     return std::max(
-                        1, static_cast<int>(std::llround(frame_time * video_fps)) + 1);
+                        1, static_cast<int>(std::llround(frame_time * source_frame_fps)) + 1);
                 };
 
                 auto reserve_output_filename = [&](const std::filesystem::path& filename,
@@ -1606,8 +1637,8 @@ namespace lfs::io {
                     if (!write_image_file(fname, write_w, write_h,
                                           write_data, params.format,
                                           params.jpg_quality)) {
-                        LOG_WARN("Failed to write sharpest window frame: {}",
-                                 lfs::core::path_to_utf8(fname));
+                        throw std::runtime_error("Failed to write sharpest window frame: " +
+                                                 lfs::core::path_to_utf8(fname));
                     } else {
                         ++written_count;
                         if (params.generate_metadata) {
@@ -1844,7 +1875,8 @@ namespace lfs::io {
                                                         frame_score});
                             }
                         } else {
-                            LOG_WARN("Failed to write extracted frame: {}", lfs::core::path_to_utf8(filename));
+                            throw std::runtime_error("Failed to write extracted frame: " +
+                                                     lfs::core::path_to_utf8(filename));
                         }
                     }
 
@@ -1964,7 +1996,8 @@ namespace lfs::io {
                                                     frame_score});
                         }
                     } else {
-                        LOG_WARN("Failed to write extracted frame: {}", lfs::core::path_to_utf8(filename));
+                        throw std::runtime_error("Failed to write extracted frame: " +
+                                                 lfs::core::path_to_utf8(filename));
                     }
 
                     finish_selected_frame();
@@ -2221,7 +2254,13 @@ namespace lfs::io {
                 // Flush remaining window candidates at end of video
                 flush_window();
 
+                // Completion reports files actually written, including delayed encoder batches.
+                if (params.progress_callback)
+                    params.progress_callback(written_count + skipped_count, written_count + skipped_count, skipped_count);
+
                 if (params.generate_metadata && !saved_frames.empty()) {
+                    const std::filesystem::path meta_path =
+                        params.output_dir / "extraction_metadata.json";
                     try {
                         nlohmann::json root;
                         root["schema_version"] = 2;
@@ -2395,14 +2434,14 @@ namespace lfs::io {
                                               {"sharpness_score", f.sharpness_score}});
                         }
 
-                        const std::filesystem::path meta_path =
-                            params.output_dir / "extraction_metadata.json";
                         std::ofstream meta_file(meta_path, std::ios::binary);
-                        if (meta_file) {
-                            meta_file << root.dump(2);
-                        }
+                        meta_file << root.dump(2);
+                        meta_file.close();
+                        if (!meta_file)
+                            throw std::runtime_error("Could not write output file");
                     } catch (const std::exception& e) {
-                        LOG_WARN("Failed to write extraction metadata: {}", e.what());
+                        throw std::runtime_error("Failed to write extraction metadata " +
+                                                 lfs::core::path_to_utf8(meta_path) + ": " + e.what());
                     }
                 }
 

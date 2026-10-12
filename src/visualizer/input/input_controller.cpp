@@ -34,8 +34,10 @@
 #include "tools/tool_base.hpp"
 #include "tools/unified_tool_registry.hpp"
 #include "training/training_manager.hpp"
+#include "visualizer/app_store.hpp"
 #include "visualizer/gui/panel_registry.hpp"
 #include "visualizer/gui_capabilities.hpp"
+#include "visualizer/preferences.hpp"
 #include "visualizer/scene_coordinate_utils.hpp"
 #include "visualizer/visualizer.hpp"
 #include <SDL3/SDL.h>
@@ -462,6 +464,13 @@ namespace lfs::vis {
 
     void InputController::initialize() {
         instance_ = this;
+        applyNewProjectNavigationDefaults();
+
+        // The GUI is initialized before this controller exists.
+        if (const auto mode = cameraNavigationModeFromName(loadCameraNavigationPreference())) {
+            setCameraNavigationMode(*mode);
+        }
+        setCameraViewSnapEnabled(loadCameraViewSnapPreference());
 
         // Get initial mouse position
         float fx, fy;
@@ -554,6 +563,33 @@ namespace lfs::vis {
             keyboard_viewport.camera.enterDrone();
             publishCameraMove(&keyboard_viewport);
         }
+        python::request_redraw();
+    }
+
+    void InputController::applyNewProjectNavigationDefaults() {
+        auto& preferences = UserPreferences::instance();
+        setNavigationUpAxis(navigationUpAxisFromName(preferences.newProjectNavigationUpAxis()).value_or(NavigationUpAxis::LegacyY),
+                            preferences.alignNewProjectGrid());
+    }
+
+    void InputController::setNavigationUpAxis(const NavigationUpAxis axis, const bool align_grid) {
+        clearViewportDragState();
+        clearWasdMomentumViewport();
+        orbit_coast_viewport_ = nullptr;
+        pan_coast_viewport_ = nullptr;
+        viewport_.camera.setNavigationUpAxis(axis);
+        if (viewer_) {
+            if (auto* rendering = viewer_->getRenderingManager()) {
+                rendering->projectSecondaryViewport().camera.setNavigationUpAxis(axis);
+                if (align_grid) {
+                    const int plane = axis == NavigationUpAxis::DataZ ? 2 : 1;
+                    rendering->setGridPlaneForPanel(SplitViewPanelId::Left, plane);
+                    rendering->setGridPlaneForPanel(SplitViewPanelId::Right, plane);
+                }
+            }
+        }
+        auto& generation = app_store().render_settings_generation;
+        generation.set(generation.get() + 1);
     }
 
     void InputController::applyNavigationSpeedPreferences(const float zoom_speed,

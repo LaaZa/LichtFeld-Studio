@@ -1,4 +1,6 @@
 {
+  "training.reset_before_strategy_change": "Reinicia el entrenamiento antes de cambiar de estrategia.",
+  "io.no_finite_seed_points": "La nube de puntos no contiene puntos iniciales finitos. Se utilizará una inicialización aleatoria.",
   "ui.vram_window_1m": "1 min",
   "ui.vram_process_nvml_tooltip": "Memoria GPU del proceso según el sistema operativo o el controlador GPU.",
   "ui.vram_process_unavailable_tooltip": "La memoria GPU del proceso no está disponible. El uso del dispositivo incluye otras aplicaciones.",
@@ -711,6 +713,12 @@
   },
   "rendering": "Renderizado",
   "scene": {
+    "summary_model_one": "{} modelo",
+    "summary_model_few": "{} modelos",
+    "summary_model_other": "{} modelos",
+    "summary_node_one": "{} nodo",
+    "summary_node_few": "{} nodos",
+    "summary_node_other": "{} nodos",
     "add_ply": "Añadir PLY...",
     "add_group": "Añadir Grupo",
     "add_group_ellipsis": "Añadir Grupo...",
@@ -949,6 +957,16 @@
     "input": "Entrada",
     "key_bindings": "Asignaciones de teclas",
     "camera_navigation": "Navegación de cámara",
+    "new_project_navigation_up": "Vertical para proyectos nuevos",
+    "new_project_navigation_help": "Solo se aplica a proyectos nuevos. Los proyectos existentes conservan sus ajustes guardados.",
+    "new_project_align_grid": "Alinear cuadrícula en proyectos nuevos",
+    "navigation_project_hint": "Guarda el proyecto para conservar la selección. Las coordenadas de los datos no cambian.",
+    "navigation_up_axis": "Eje vertical",
+    "navigation_up_legacy_y": "Y-up (predeterminado)",
+    "navigation_up_data_z": "+Z arriba (coordenadas de datos)",
+    "navigation_up_help": "Se guarda en el proyecto. Solo cambia la navegación; las coordenadas y la escala de los datos no cambian.",
+    "align_navigation_grid": "Alinear cuadrícula con la vertical",
+    "align_grid_short": "Alinear",
     "navigation_mode": "Modo de navegación",
     "zoom_speed": "Velocidad de zoom",
     "zoom_speed_tooltip": "Velocidad predeterminada para hacer zoom con la rueda del ratón.",
@@ -1366,9 +1384,9 @@
         "custom": "Último HDRI personalizado cargado"
       },
       "grid_plane": {
-        "yz": "Mostrar la cuadrícula en el plano YZ (vista derecha)",
-        "xz": "Mostrar la cuadrícula en el plano XZ (vista superior)",
-        "xy": "Mostrar la cuadrícula en el plano XY (vista frontal)"
+        "yz": "Mostrar la cuadrícula en el plano YZ",
+        "xz": "Mostrar la cuadrícula en el plano XZ",
+        "xy": "Mostrar la cuadrícula en el plano XY"
       },
       "sh_degree": {
         "0": "Solo difuso — sin iluminación dependiente de la vista",
@@ -2097,6 +2115,8 @@
     "strategy_default": "Predeterminado",
     "split": "División:",
     "mcp_name": "MCP",
+    "ui_fps_tooltip": "Fotogramas de la interfaz presentados por segundo.",
+    "view_fps_tooltip": "Fotogramas de la vista 3D renderizados por segundo. Una vista estática puede indicar 0 mientras la interfaz sigue respondiendo.",
     "ui": "IU",
     "view": "Vista"
   },
@@ -2430,9 +2450,9 @@
     "solid_color": "Color sólido",
     "equirectangular_hdri": "HDRI equirectangular",
     "off": "Desactivado",
-    "grid_plane_yz": "YZ (derecha)",
-    "grid_plane_xz": "XZ (arriba)",
-    "grid_plane_xy": "XY (frontal)",
+    "grid_plane_yz": "YZ",
+    "grid_plane_xz": "XZ",
+    "grid_plane_xy": "XY",
     "psnr": "PSNR",
     "psnr_ssim": "PSNR + SSIM",
     "manual": "Manual",
@@ -2676,12 +2696,13 @@
     "right_click_to_add": "Clic derecho para añadir...",
     "training_complete": "Entrenamiento Completado",
     "training_stopped": "Entrenamiento Detenido",
+    "training_stopped_body": "El usuario detuvo el entrenamiento en la iteración {}.\n\nGuarda el proyecto para conservar este estado. Vuelve a abrir el proyecto guardado para reanudar el entrenamiento.",
     "training_error": "Error de Entrenamiento",
     "param_manager_unavailable": "ParameterManager no disponible",
     "failed_to_load_params": "Error al cargar los parámetros:",
-    "err_distorted_images": "Se detectaron imágenes distorsionadas. Activa --gut o --undistort para entrenar con cámaras con distorsión.",
+    "err_distorted_images": "Se detectaron imágenes distorsionadas. Activa GUT o Corregir distorsión en el panel de entrenamiento para entrenar con cámaras con distorsión.",
     "err_ortho_not_supported": "El entrenamiento con cámaras de modelo ortográfico aún no es compatible.",
-    "err_non_pinhole": "Activa --gut o --undistort para entrenar con cámaras de modelo no estenopeico."
+    "err_non_pinhole": "Activa GUT o Corregir distorsión en el panel de entrenamiento para entrenar con cámaras de modelo no estenopeico."
   },
   "projects.gallery.sidebar.title": "Galería",
   "projects.gallery.sidebar.refresh": "Comprobar galería",

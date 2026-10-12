@@ -1,4 +1,6 @@
 {
+  "training.reset_before_strategy_change": "Réinitialisez l’entraînement avant de changer de stratégie.",
+  "io.no_finite_seed_points": "Le nuage de points ne contient aucun point initial fini. Une initialisation aléatoire sera utilisée.",
   "ui.vram_window_1m": "1 min",
   "ui.vram_process_nvml_tooltip": "Mémoire GPU du processus indiquée par le système ou le pilote GPU.",
   "ui.vram_process_unavailable_tooltip": "La mémoire GPU du processus est indisponible. L’utilisation du périphérique inclut les autres applications.",
@@ -711,6 +713,12 @@
   },
   "rendering": "Rendu",
   "scene": {
+    "summary_model_one": "{} modèle",
+    "summary_model_few": "{} modèles",
+    "summary_model_other": "{} modèles",
+    "summary_node_one": "{} nœud",
+    "summary_node_few": "{} nœuds",
+    "summary_node_other": "{} nœuds",
     "add_ply": "Ajouter PLY...",
     "add_group": "Ajouter un Groupe",
     "add_group_ellipsis": "Ajouter un Groupe...",
@@ -949,6 +957,16 @@
     "input": "Entrée",
     "key_bindings": "Liaisons de touches",
     "camera_navigation": "Navigation de la caméra",
+    "new_project_navigation_up": "Verticale des nouveaux projets",
+    "new_project_navigation_help": "S’applique uniquement aux nouveaux projets. Les projets existants conservent leurs réglages enregistrés.",
+    "new_project_align_grid": "Aligner la grille des nouveaux projets",
+    "navigation_project_hint": "Enregistrez le projet pour conserver ce choix. Les coordonnées des données restent inchangées.",
+    "navigation_up_axis": "Axe vertical",
+    "navigation_up_legacy_y": "Y-up (par défaut)",
+    "navigation_up_data_z": "+Z vers le haut (coordonnées des données)",
+    "navigation_up_help": "Enregistré dans le projet. Modifie uniquement la navigation ; les coordonnées et l’échelle des données restent inchangées.",
+    "align_navigation_grid": "Aligner la grille sur la verticale",
+    "align_grid_short": "Aligner",
     "navigation_mode": "Mode de navigation",
     "zoom_speed": "Vitesse de zoom",
     "zoom_speed_tooltip": "Vitesse par défaut pour zoomer avec la molette de la souris.",
@@ -1366,9 +1384,9 @@
         "custom": "Dernier HDRI personnalisé chargé"
       },
       "grid_plane": {
-        "yz": "Afficher la grille sur le plan YZ (vue de droite)",
-        "xz": "Afficher la grille sur le plan XZ (vue de dessus)",
-        "xy": "Afficher la grille sur le plan XY (vue de face)"
+        "yz": "Afficher la grille sur le plan YZ",
+        "xz": "Afficher la grille sur le plan XZ",
+        "xy": "Afficher la grille sur le plan XY"
       },
       "sh_degree": {
         "0": "Diffus uniquement — pas d'éclairage dépendant de la vue",
@@ -2097,6 +2115,8 @@
     "strategy_default": "Défaut",
     "split": "Division :",
     "mcp_name": "MCP",
+    "ui_fps_tooltip": "Images de l’interface affichées par seconde.",
+    "view_fps_tooltip": "Images de la vue 3D calculées par seconde. Une vue statique peut afficher 0 alors que l’interface reste réactive.",
     "ui": "IU",
     "view": "Vue"
   },
@@ -2430,9 +2450,9 @@
     "solid_color": "Couleur unie",
     "equirectangular_hdri": "HDRI équirectangulaire",
     "off": "Désactivé",
-    "grid_plane_yz": "YZ (droite)",
-    "grid_plane_xz": "XZ (haut)",
-    "grid_plane_xy": "XY (avant)",
+    "grid_plane_yz": "YZ",
+    "grid_plane_xz": "XZ",
+    "grid_plane_xy": "XY",
     "psnr": "PSNR",
     "psnr_ssim": "PSNR + SSIM",
     "manual": "Manuel",
@@ -2676,12 +2696,13 @@
     "right_click_to_add": "Clic droit pour ajouter...",
     "training_complete": "Entraînement Terminé",
     "training_stopped": "Entraînement Arrêté",
+    "training_stopped_body": "L’utilisateur a arrêté l’entraînement à l’itération {}.\n\nEnregistrez le projet pour conserver cet état. Rouvrez le projet enregistré pour reprendre l’entraînement.",
     "training_error": "Erreur d'Entraînement",
     "param_manager_unavailable": "Gestionnaire de paramètres indisponible",
     "failed_to_load_params": "Échec du chargement des paramètres :",
-    "err_distorted_images": "Images distordues détectées. Activez --gut ou --undistort pour entraîner avec des caméras à distorsion.",
+    "err_distorted_images": "Images distordues détectées. Activez GUT ou Corriger la distorsion dans le panneau Entraînement pour entraîner avec des caméras à distorsion.",
     "err_ortho_not_supported": "L'entraînement avec le modèle de caméra orthographique n'est pas encore supporté.",
-    "err_non_pinhole": "Activez --gut ou --undistort pour entraîner avec des caméras non-pinhole."
+    "err_non_pinhole": "Activez GUT ou Corriger la distorsion dans le panneau Entraînement pour entraîner avec des caméras dont le modèle n’est pas sténopé."
   },
   "projects.gallery.sidebar.title": "Galerie",
   "projects.gallery.sidebar.refresh": "Vérifier la galerie",

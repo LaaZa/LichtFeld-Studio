@@ -30,6 +30,7 @@
 #include "visualizer/scene/scene_manager.hpp"
 #include "visualizer/scene_coordinate_utils.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -37,14 +38,118 @@
 #include <cstring>
 #include <cuda_runtime.h>
 #include <filesystem>
+#include <fstream>
 #include <glm/gtc/matrix_transform.hpp>
 #include <gtest/gtest.h>
 #include <memory>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace lfs::vis {
+
+    TEST(EnvironmentCompositingTest, EnvironmentIdentityCopyCannotAllocate) {
+        // Copying pane metadata into the frame and lazy capture must not need
+        // allocation-capable ownership copies of the environment path.
+        EXPECT_TRUE((std::is_nothrow_copy_constructible_v<decltype(VulkanEnvironmentParams::map_path)>));
+        EXPECT_TRUE((std::is_nothrow_copy_assignable_v<decltype(VulkanEnvironmentParams::map_path)>));
+    }
+
+    TEST(EnvironmentCompositingTest, FrameAndCaptureShareEnvironmentIdentityAfterSettingsChange) {
+        auto path = std::make_shared<const std::filesystem::path>("environments/example/long/environment-map.hdr");
+        VulkanSplitViewParams panels;
+        panels.left.environment.map_path = panels.right.environment.map_path = path;
+        RenderingManager::VulkanMeshFrame frame;
+        frame.split_view = panels;
+        const auto capture = [params = panels] { return params; };
+        path = std::make_shared<const std::filesystem::path>("environments/replacement.hdr");
+        panels.left.environment.map_path = panels.right.environment.map_path = path;
+        const auto captured = capture();
+        EXPECT_EQ(frame.split_view.left.environment.map_path, captured.left.environment.map_path);
+        EXPECT_EQ(captured.left.environment.map_path, captured.right.environment.map_path);
+        EXPECT_EQ(*captured.left.environment.map_path, "environments/example/long/environment-map.hdr");
+        EXPECT_NE(captured.left.environment.map_path, path);
+    }
+
+    TEST(EnvironmentCompositingTest, ScenePanelsPreserveAlphaForEnvironment) {
+        RenderSettings settings;
+        settings.environment_mode = EnvironmentBackgroundMode::Equirectangular;
+        settings.environment_map_path = "sky.hdr";
+        for (const auto mode : {SplitViewMode::Disabled, SplitViewMode::IndependentDual,
+                                SplitViewMode::PLYComparison}) {
+            settings.split_view_mode = mode;
+            EXPECT_TRUE(environmentBackgroundUsesTransparentViewerCompositing(settings));
+        }
+    }
+
+    TEST(EnvironmentCompositingTest, SolidEmptyAndGroundTruthKeepOpaqueRendering) {
+        RenderSettings settings;
+        for (const auto mode : {SplitViewMode::Disabled, SplitViewMode::IndependentDual,
+                                SplitViewMode::PLYComparison, SplitViewMode::GTComparison}) {
+            settings.split_view_mode = mode;
+            settings.environment_mode = EnvironmentBackgroundMode::SolidColor;
+            settings.environment_map_path = "sky.hdr";
+            EXPECT_FALSE(environmentBackgroundUsesTransparentViewerCompositing(settings));
+            settings.environment_mode = EnvironmentBackgroundMode::Equirectangular;
+            settings.environment_map_path.clear();
+            EXPECT_FALSE(environmentBackgroundUsesTransparentViewerCompositing(settings));
+        }
+        settings.environment_map_path = "sky.hdr";
+        EXPECT_FALSE(environmentBackgroundUsesTransparentViewerCompositing(settings));
+    }
+
+    TEST(EnvironmentCompositingTest, SplitCaptureCompositesAlphaAndPreservesOpaquePanels) {
+        constexpr int width = 64;
+        constexpr int height = 16;
+        const auto path = std::filesystem::temp_directory_path() /
+                          ("split-environment-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".hdr");
+        {
+            std::ofstream file(path, std::ios::binary);
+            file << "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 4 +X 4\n";
+            const unsigned char pixel[]{128, 64, 32, 129};
+            for (int i = 0; i < 16; ++i) {
+                file.write(reinterpret_cast<const char*>(pixel), sizeof(pixel));
+            }
+        }
+        const glm::vec3 sky{0.90549245f, 0.80251510f, 0.63960122f};
+        for (const bool normalize : {false, true}) {
+            for (const float alpha : {0.0f, 0.5f, 1.0f}) {
+                std::vector<float> pixels(4 * width * height, 0.25f);
+                std::fill(pixels.begin() + 3 * width * height, pixels.end(), alpha);
+                auto image = std::make_shared<lfs::core::Tensor>(lfs::core::Tensor::from_vector(
+                    pixels, {4, height, width}, lfs::core::Device::CPU));
+                VulkanSplitViewParams params;
+                params.content_rect = {0, 0, width, height};
+                params.left.image = params.right.image = image;
+                params.left.end_position = params.right.start_position = 0.5f;
+                for (auto* panel : {&params.left, &params.right}) {
+                    panel->normalize_x_to_panel = normalize;
+                    panel->environment.enabled = true;
+                    panel->environment.map_path = std::make_shared<const std::filesystem::path>(path);
+                    panel->environment.viewport_size = {width, height};
+                    panel->environment.intrinsics = {32, 32, 32, 8};
+                }
+                const auto capture = RenderingManager::composeSplitViewCpu(params, {width, height});
+                ASSERT_TRUE(capture);
+                const auto* actual = capture->ptr<float>();
+                for (const int x : {0, width - 1}) {
+                    for (int channel = 0; channel < 3; ++channel) {
+                        EXPECT_NEAR(actual[x * 3 + channel], 0.25f * alpha + sky[channel] * (1.0f - alpha), 1e-5f);
+                    }
+                }
+                params.left.environment.enabled = params.right.environment.enabled = false;
+                const auto opaque = RenderingManager::composeSplitViewCpu(params, {width, height});
+                ASSERT_TRUE(opaque);
+                for (const int x : {0, width - 1}) {
+                    for (int channel = 0; channel < 3; ++channel) {
+                        EXPECT_FLOAT_EQ(opaque->ptr<float>()[x * 3 + channel], 0.25f);
+                    }
+                }
+            }
+        }
+        std::filesystem::remove(path);
+    }
 
     TEST(StaleFrameGuardTest, DeferralsBelowBoundKeepCachedThenEscalateOnce) {
         StaleFrameGuard guard;
@@ -3157,6 +3262,105 @@ namespace lfs::vis {
         scene.setNodeVisibility(second, false);
         lfs::core::events::cmd::ToggleSplitView{}.emit();
         EXPECT_EQ(manager.getSettings().split_view_mode, SplitViewMode::Disabled);
+    }
+
+    TEST_F(RenderingManagerEventsTest, HidingComparisonModelDisablesSplitAndResetsOffset) {
+        SceneManager scene_manager;
+        services().set(&scene_manager);
+        RenderingManager manager;
+        auto& scene = scene_manager.getScene();
+        scene.addSplat("first", makeTestSplat(0.0f));
+        const auto second = scene.addSplat("second", makeTestSplat(1.0f));
+        lfs::core::events::cmd::ToggleSplitView{}.emit();
+        auto settings = manager.getSettings();
+        settings.split_view_offset = 3;
+        settings.split_position = 0.35f;
+        manager.updateSettings(settings);
+        (void)manager.frameDemandLedger().plan(FrameClock::now());
+
+        scene.setNodeVisibility(second, false);
+
+        EXPECT_EQ(manager.getSettings().split_view_mode, SplitViewMode::Disabled);
+        EXPECT_EQ(manager.getSettings().split_view_offset, 0u);
+        EXPECT_FLOAT_EQ(manager.getSettings().split_position, 0.35f);
+        EXPECT_TRUE(manager.frameDemandLedger().plan(FrameClock::now()).present);
+        EXPECT_TRUE(manager.frameDemandLedger().plan(FrameClock::now()).empty());
+        scene.setNodeVisibility(second, true);
+        EXPECT_EQ(manager.getSettings().split_view_mode, SplitViewMode::Disabled);
+        lfs::core::events::cmd::ToggleSplitView{}.emit();
+        EXPECT_EQ(manager.getSettings().split_view_mode, SplitViewMode::PLYComparison);
+    }
+
+    TEST_F(RenderingManagerEventsTest, ComparisonUsesEffectiveVisibilityAfterGroupChanges) {
+        SceneManager scene_manager;
+        services().set(&scene_manager);
+        RenderingManager manager;
+        auto& scene = scene_manager.getScene();
+        const auto group = scene.addGroup("group");
+        scene.addSplat("first", makeTestSplat(0.0f));
+        const auto second = scene.addSplat("second", makeTestSplat(1.0f));
+        ASSERT_TRUE(scene.reparent(second, group));
+        lfs::core::events::cmd::ToggleSplitView{}.emit();
+        scene.setNodeVisibility(group, false);
+        EXPECT_EQ(manager.getSettings().split_view_mode, SplitViewMode::Disabled);
+
+        ASSERT_TRUE(scene.reparent(second, lfs::core::NULL_NODE));
+        lfs::core::events::cmd::ToggleSplitView{}.emit();
+        ASSERT_EQ(manager.getSettings().split_view_mode, SplitViewMode::PLYComparison);
+        ASSERT_TRUE(scene.reparent(second, group));
+        EXPECT_EQ(manager.getSettings().split_view_mode, SplitViewMode::Disabled);
+    }
+
+    TEST_F(RenderingManagerEventsTest, VisibilityKeepsComparisonWhileTwoModelsRemain) {
+        SceneManager scene_manager;
+        services().set(&scene_manager);
+        RenderingManager manager;
+        auto& scene = scene_manager.getScene();
+        scene.addSplat("first", makeTestSplat(0.0f));
+        scene.addSplat("second", makeTestSplat(1.0f));
+        const auto third = scene.addSplat("third", makeTestSplat(2.0f));
+        lfs::core::events::cmd::ToggleSplitView{}.emit();
+        auto settings = manager.getSettings();
+        settings.split_view_offset = 1;
+        settings.split_position = 0.35f;
+        manager.updateSettings(settings);
+        for (const bool visible : {false, true}) {
+            scene.setNodeVisibility(third, visible);
+            EXPECT_EQ(manager.getSettings().split_view_mode, SplitViewMode::PLYComparison);
+            EXPECT_EQ(manager.getSettings().split_view_offset, 1u);
+            EXPECT_FLOAT_EQ(manager.getSettings().split_position, 0.35f);
+        }
+        scene.removeNode("third");
+        lfs::core::events::state::PLYRemoved{}.emit();
+        EXPECT_EQ(manager.getSettings().split_view_mode, SplitViewMode::PLYComparison);
+        scene.removeNode("second");
+        lfs::core::events::state::PLYRemoved{}.emit();
+        EXPECT_EQ(manager.getSettings().split_view_mode, SplitViewMode::Disabled);
+    }
+
+    TEST_F(RenderingManagerEventsTest, VisibilityPreservesOtherViewModes) {
+        SceneManager scene_manager;
+        addDatasetCameraWithImage(scene_manager);
+        services().set(&scene_manager);
+        RenderingManager manager;
+        auto& scene = scene_manager.getScene();
+        const auto model = scene.addSplat("model", makeTestSplat(0.0f));
+        for (const auto mode : {SplitViewMode::Disabled, SplitViewMode::IndependentDual,
+                                SplitViewMode::GTComparison}) {
+            auto settings = manager.getSettings();
+            settings.split_view_mode = mode;
+            manager.updateSettings(settings);
+            const auto before = manager.getSettings();
+            for (const bool visible : {false, true}) {
+                scene.setNodeVisibility(model, visible);
+                const auto after = manager.getSettings();
+                EXPECT_EQ(after.split_view_mode, before.split_view_mode);
+                EXPECT_EQ(after.equirectangular, before.equirectangular);
+                EXPECT_EQ(after.show_camera_frustums, before.show_camera_frustums);
+                EXPECT_EQ(after.split_view_offset, before.split_view_offset);
+                EXPECT_EQ(after.split_position, before.split_position);
+            }
+        }
     }
 
     TEST_F(RenderingManagerEventsTest, RejectedPlyComparisonPreservesIndependentView) {

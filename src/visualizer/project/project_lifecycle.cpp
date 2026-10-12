@@ -10,6 +10,7 @@
 
 #include "core/assert.hpp"
 #include "core/checkpoint_format.hpp"
+#include "core/cuda_error.hpp"
 #include "core/data_loading_service.hpp"
 #include "core/environment.hpp"
 #include "core/error_bus.hpp"
@@ -44,6 +45,7 @@
 #include "rendering/vulkan_external_tensor.hpp"
 #include "scene/scene_manager.hpp"
 #include "scene/viewer_splat_quantize.hpp"
+#include "training/checkpoint.hpp"
 #include "training/project_snapshot_chapters.hpp"
 #include "training/trainer.hpp"
 #include "training/training_manager.hpp"
@@ -1087,7 +1089,7 @@ namespace lfs::vis::project {
             const int iteration =
                 cached_bound_checkpoint_iteration_.value_or(0);
             const int max_iterations =
-                static_cast<int>(params.iterations);
+                params.resolved_total_iterations();
             const bool completed = storedSessionCompleted(
                 iteration,
                 max_iterations,
@@ -1300,6 +1302,19 @@ namespace lfs::vis::project {
                 if (!installed) {
                     return;
                 }
+                viewer_.postWork({
+                    .run = [this, epoch, document] {
+                        if (epoch_.load(std::memory_order_acquire) != epoch || document_ != document)
+                            return;
+                        if (auto* manager = viewer_.getSceneManager();
+                            manager && manager->appearanceUsesTrainingViewport()) {
+                            // Finish any viewport use before releasing the stored copy.
+                            LFS_CUDA_CHECK(cudaDeviceSynchronize());
+                            manager->clearAppearanceModel();
+                        }
+                    },
+                    .cancel = {},
+                });
                 if (then_reset) {
                     viewer_.postWork({
                         .run =
@@ -3429,6 +3444,14 @@ namespace lfs::vis::project {
                 .defer_geometry_payloads = true,
             });
         if (!opened) {
+            if (opened.error().code() == lfs::ErrorCode::NotFound && document_->source_reader()) {
+                std::error_code error;
+                if (!std::filesystem::exists(path, error) && !error) {
+                    // The document still owns the removed file's payloads.
+                    // Keep that reader so an explicit save can recover them.
+                    return {};
+                }
+            }
             return lfs::Status::failure(
                 std::move(opened).error());
         }
@@ -8195,6 +8218,32 @@ namespace lfs::vis::project {
                         }
                         return;
                     }
+                    // Display correction is needed even while the training session
+                    // remains stored. Read only appearance, on the hydration worker.
+                    auto appearance = std::make_shared<lfs::training::CheckpointAppearance>();
+                    const auto& hydration_report = staged->report();
+                    if (hydration_report.checkpoint_uuid && hydration_report.checkpoint_header &&
+                        lfs::core::has_flag(hydration_report.checkpoint_header->flags,
+                                            lfs::core::CheckpointFlags::HAS_PPISP) &&
+                        (!hydration_report.checkpoint_params ||
+                         hydration_report.checkpoint_params->optimization.ppisp_active())) {
+                        if (const auto* checkpoint = opened_source->find_checkpoint(*hydration_report.checkpoint_uuid)) {
+                            const auto loaded = checkpoint->visit_stream(
+                                [&](std::istream& source, const std::uint64_t bytes) -> lfs::Result<void> {
+                                    auto parsed = lfs::training::load_checkpoint_appearance(source, bytes);
+                                    if (!parsed)
+                                        return lfs::Result<void>::failure(std::move(parsed).error());
+                                    *appearance = std::move(*parsed);
+                                    return {};
+                                });
+                            if (!loaded) {
+                                LOG_WARN("Project appearance restore failed: {}", developerError(loaded.error()));
+                            } else if (hydration_report.checkpoint_params &&
+                                       !hydration_report.checkpoint_params->optimization.ppisp_use_controller) {
+                                appearance->controller.reset();
+                            }
+                        }
+                    }
                     const auto payload_staged_at =
                         std::chrono::steady_clock::now();
                     if (project_open_job) {
@@ -8219,7 +8268,7 @@ namespace lfs::vis::project {
                                  selection_mutation_serial,
                                  selected_node_uuids,
                                  restore_ticket,
-                                 plan, hydration_started,
+                                 plan, appearance, hydration_started,
                                  source_opened_at,
                                  payload_staged_at,
                                  queued_at, project_open_job] {
@@ -8261,6 +8310,10 @@ namespace lfs::vis::project {
                                                     plan->value()),
                                                 install_selection);
                                     plan->reset();
+                                    if (appearance->ppisp) {
+                                        manager->setAppearanceModel(std::move(appearance->ppisp),
+                                                                    std::move(appearance->controller), true);
+                                    }
                                     manager->changeContentType(
                                         inferContentType(
                                             manager->getScene()));
@@ -8608,6 +8661,8 @@ namespace lfs::vis::project {
         // A new document clears project-owned data, but it is not a workspace
         // preset. Preserve the live panel arrangement and desktop geometry.
         viewer_.resetProjectState(/*reset_panel_registry=*/false);
+        if (auto* input = viewer_.getInputController())
+            input->applyNewProjectNavigationDefaults();
         active_restore_ticket_ = 0;
         recovery_prompt_pending_ = false;
         epoch_.fetch_add(

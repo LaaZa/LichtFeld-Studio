@@ -44,6 +44,7 @@
 #include "rendering/coordinate_conventions.hpp"
 #include "rendering/passes/vulkan_viewport_pass.hpp"
 #include "rendering/rendering_manager.hpp"
+#include "rendering/viewport_appearance_correction.hpp"
 #include "scene/viewer_splat_quantize.hpp"
 #include "tools/unified_tool_registry.hpp"
 #include "training/checkpoint.hpp"
@@ -944,7 +945,8 @@ namespace {
     make_training_autosave_checkpoint_payload(
         const lfs::core::Uuid& checkpoint_uuid,
         const std::filesystem::path& dataset_path = {},
-        const int sh_degree = 0) {
+        const int sh_degree = 0,
+        const lfs::training::PPISP* appearance = nullptr) {
         const std::size_t count = sh_degree > 0 ? 8 : 2;
         auto model = sh_degree > 0
                          ? make_degree1_splat(count)
@@ -955,6 +957,7 @@ namespace {
             lfs::core::param::OptimizationParameters::
                 mcmc_defaults();
         parameters.optimization.sh_degree = sh_degree;
+        parameters.optimization.use_ppisp = appearance != nullptr;
         parameters.optimization.max_cap =
             static_cast<int>(count);
         parameters.dataset.data_path = dataset_path;
@@ -964,7 +967,7 @@ namespace {
         (void)lfs::test::licht::require_result(
             lfs::training::serialize_checkpoint(
                 stream, 11, strategy, parameters,
-                nullptr, nullptr, nullptr, nullptr));
+                nullptr, appearance, nullptr, nullptr));
         const auto encoded = stream.str();
         std::vector<std::byte> bytes(encoded.size());
         std::memcpy(
@@ -1106,7 +1109,10 @@ namespace {
                 lfs::io::project::
                     TrainingFinishReason::None,
         const int sh_degree = 0,
-        const int prms_iterations = -1) {
+        const int prms_iterations = -1,
+        const bool enable_sparsity = false,
+        const int sparsify_steps = 15000,
+        const lfs::training::PPISP* appearance = nullptr) {
         auto document = lfs::test::licht::make_empty_document(
             lfs::core::generate_uuid_v4(), 1);
         lfs::core::Scene source;
@@ -1156,7 +1162,7 @@ namespace {
                 checkpoint_uuid,
                 make_training_autosave_checkpoint_payload(
                     checkpoint_uuid, dataset_path,
-                    sh_degree)));
+                    sh_degree, appearance)));
         if (finish_reason !=
             lfs::io::project::TrainingFinishReason::
                 None) {
@@ -1172,6 +1178,11 @@ namespace {
             snapshot.mrnf_current.iterations = iterations;
             snapshot.mcmc_session.iterations = iterations;
             snapshot.mcmc_current.iterations = iterations;
+            for (auto* params : {&snapshot.mrnf_session, &snapshot.mrnf_current,
+                                 &snapshot.mcmc_session, &snapshot.mcmc_current}) {
+                params->enable_sparsity = enable_sparsity;
+                params->sparsify_steps = sparsify_steps;
+            }
             lfs::test::licht::require_status(
                 document->edit_parameters().set_snapshot(
                     snapshot));
@@ -2494,6 +2505,195 @@ contract["check_selection_submode_follows_native_mode"](lf)
         const auto selected = scene_manager->getSelectedNodeNames();
         EXPECT_EQ(std::set<std::string>(selected.begin(), selected.end()),
                   (std::set<std::string>{"first", "second"}));
+    }
+
+    TEST_F(VisualizerImplResetTest, NavigationVerticalRoundTripPreservesPosesAndGridChoices) {
+        using namespace lfs::io::project;
+        using namespace lfs::vis::project;
+        using lfs::test::licht::require_result;
+        using lfs::test::licht::require_status;
+        auto& preferences = UserPreferences::instance();
+        struct RestoreDefaults {
+            std::string axis;
+            bool align_grid;
+            ~RestoreDefaults() { UserPreferences::instance().setNewProjectNavigation(axis, align_grid); }
+        } restore{preferences.newProjectNavigationUpAxis(), preferences.alignNewProjectGrid()};
+        preferences.setNewProjectNavigation("data_z", true);
+        VisualizerImpl viewer(projectOptions());
+        viewer.input_controller_ = std::make_unique<InputController>(nullptr, viewer.getViewport());
+        viewer.input_controller_->setViewer(&viewer);
+        auto& input = *viewer.input_controller_;
+        auto& rendering = *viewer.getRenderingManager();
+        auto initial_settings = rendering.getSettings();
+        initial_settings.split_view_mode = SplitViewMode::IndependentDual;
+        rendering.updateSettings(initial_settings);
+        auto& primary = viewer.getViewport();
+        auto& secondary = rendering.projectSecondaryViewport();
+        primary.ortho_scale_override = rendering.getSettings().ortho_scale;
+        secondary.ortho_scale_override = rendering.getSettings().ortho_scale;
+        const auto primary_pose = capturePanelCameraProjectState(primary, rendering.getSettings().ortho_scale);
+        const auto secondary_pose = capturePanelCameraProjectState(secondary, rendering.getSettings().ortho_scale);
+        rendering.setGridPlaneForPanel(SplitViewPanelId::Left, 0);
+        rendering.setGridPlaneForPanel(SplitViewPanelId::Right, 1);
+        nlohmann::json populated_timeline{
+            {"version", 1},
+            {"clip_duration", 30.0},
+            {"keyframes", nlohmann::json::array({{{"time", 0.0}, {"position", {1.0, 2.0, 3.0}}, {"rotation", {1.0, 0.0, 0.0, 0.0}}, {"focal_length_mm", 50.0}, {"easing", 0}},
+                                                 {{"time", 2.0}, {"position", {4.0, 5.0, 6.0}}, {"rotation", {1.0, 0.0, 0.0, 0.0}}, {"focal_length_mm", 35.0}, {"easing", 0}}})}};
+        ASSERT_TRUE(viewer.getGuiManager()->sequencer().loadFromJson(populated_timeline));
+        const auto timeline = viewer.getGuiManager()->sequencer().saveToJson();
+        auto& history = op::undoHistory();
+        history.push(std::make_unique<NoopUndoEntry>());
+        const auto undo_count = history.undoCount();
+        input.setNavigationUpAxis(NavigationUpAxis::DataZ);
+        EXPECT_EQ(history.undoCount(), undo_count);
+        ASSERT_TRUE(history.undo().success);
+        const auto redo_count = history.redoCount();
+        input.setNavigationUpAxis(NavigationUpAxis::LegacyY, true);
+        EXPECT_EQ(history.redoCount(), redo_count);
+        ASSERT_TRUE(history.redo().success);
+        EXPECT_EQ(history.undoCount(), undo_count);
+        input.setNavigationUpAxis(NavigationUpAxis::DataZ);
+        rendering.setGridPlaneForPanel(SplitViewPanelId::Left, 0);
+        rendering.setGridPlaneForPanel(SplitViewPanelId::Right, 1);
+        EXPECT_EQ(primary_pose, capturePanelCameraProjectState(primary, rendering.getSettings().ortho_scale));
+        EXPECT_EQ(secondary_pose, capturePanelCameraProjectState(secondary, rendering.getSettings().ortho_scale));
+        EXPECT_EQ(secondary.camera.navigationUpAxis(), NavigationUpAxis::DataZ);
+        EXPECT_EQ(rendering.getGridPlaneForPanel(SplitViewPanelId::Left), 0);
+        EXPECT_EQ(rendering.getGridPlaneForPanel(SplitViewPanelId::Right), 1);
+        auto captured = require_result(captureGuiSession(viewer, ProjectSessionChapters{}, {}));
+        EXPECT_EQ(captured.view.dom().get_json("navigation.up_axis"), lfs::io::JsonChapterDom::Json("data_z"));
+        auto prepared = require_result(prepareGuiSessionRestore(captured));
+        input.setNavigationUpAxis(NavigationUpAxis::LegacyY, true);
+        std::vector<CameraBookmarkProjectState> bookmarks;
+        applyGuiSession(viewer, prepared, bookmarks);
+        EXPECT_EQ(input.navigationUpAxis(), NavigationUpAxis::DataZ);
+        EXPECT_EQ(secondary.camera.navigationUpAxis(), NavigationUpAxis::DataZ);
+        EXPECT_EQ(primary_pose, capturePanelCameraProjectState(primary, rendering.getSettings().ortho_scale));
+        EXPECT_EQ(secondary_pose, capturePanelCameraProjectState(secondary, rendering.getSettings().ortho_scale));
+        EXPECT_EQ(rendering.getGridPlaneForPanel(SplitViewPanelId::Left), 0);
+        EXPECT_EQ(rendering.getGridPlaneForPanel(SplitViewPanelId::Right), 1);
+        EXPECT_EQ(viewer.getGuiManager()->sequencer().saveToJson(), timeline);
+        input.setNavigationUpAxis(NavigationUpAxis::DataZ, true);
+        EXPECT_EQ(rendering.getGridPlaneForPanel(SplitViewPanelId::Left), 2);
+        EXPECT_EQ(rendering.getGridPlaneForPanel(SplitViewPanelId::Right), 2);
+        auto legacy_root = *captured.view.dom().get_json("navigation");
+        legacy_root.erase("up_axis");
+        require_status(captured.view.dom().set_json("navigation", legacy_root));
+        applyGuiSession(viewer, require_result(prepareGuiSessionRestore(captured)), bookmarks);
+        EXPECT_EQ(input.navigationUpAxis(), NavigationUpAxis::LegacyY);
+        EXPECT_EQ(secondary.camera.navigationUpAxis(), NavigationUpAxis::LegacyY);
+        // Future values and malformed optional values fall back independently of
+        // the user's new-project default, without losing the rest of the view.
+        for (const auto unknown : {nlohmann::json("future_up"), nlohmann::json(2),
+                                   nlohmann::json(nullptr), nlohmann::json(true),
+                                   nlohmann::json::array(), nlohmann::json::object()}) {
+            SCOPED_TRACE(unknown.dump());
+            require_status(captured.view.dom().set_json("navigation.up_axis", unknown));
+            input.setNavigationUpAxis(NavigationUpAxis::DataZ);
+            auto fallback = prepareGuiSessionRestore(captured);
+            ASSERT_TRUE(fallback);
+            applyGuiSession(viewer, fallback.value(), bookmarks);
+            EXPECT_EQ(input.navigationUpAxis(), NavigationUpAxis::LegacyY);
+            EXPECT_EQ(secondary.camera.navigationUpAxis(), NavigationUpAxis::LegacyY);
+            EXPECT_EQ(primary_pose, capturePanelCameraProjectState(primary, rendering.getSettings().ortho_scale));
+            EXPECT_EQ(secondary_pose, capturePanelCameraProjectState(secondary, rendering.getSettings().ortho_scale));
+            EXPECT_EQ(rendering.getGridPlaneForPanel(SplitViewPanelId::Left), 0);
+            EXPECT_EQ(rendering.getGridPlaneForPanel(SplitViewPanelId::Right), 1);
+            EXPECT_EQ(viewer.getGuiManager()->sequencer().saveToJson(), timeline);
+        }
+        input.setNavigationUpAxis(NavigationUpAxis::DataZ);
+        viewer.resetProjectState(false);
+        EXPECT_EQ(input.navigationUpAxis(), NavigationUpAxis::LegacyY);
+        EXPECT_EQ(secondary.camera.navigationUpAxis(), NavigationUpAxis::LegacyY);
+        // Global defaults never modify the current project. New documents alone adopt them.
+        EXPECT_THROW(preferences.setNewProjectNavigation("invalid", false), std::invalid_argument);
+        EXPECT_EQ(preferences.newProjectNavigationUpAxis(), "data_z");
+        require_status(viewer.project_lifecycle_->newProject(ProjectSwitchDisposition::DiscardChanges));
+        EXPECT_EQ(input.navigationUpAxis(), NavigationUpAxis::DataZ);
+        EXPECT_EQ(rendering.getGridPlaneForPanel(SplitViewPanelId::Left), 2);
+        preferences.setNewProjectNavigation("legacy_y", false);
+        EXPECT_EQ(input.navigationUpAxis(), NavigationUpAxis::DataZ);
+        require_status(viewer.project_lifecycle_->newProject(ProjectSwitchDisposition::DiscardChanges));
+        EXPECT_EQ(input.navigationUpAxis(), NavigationUpAxis::LegacyY);
+        preferences.setNewProjectNavigation("data_z", false);
+        auto split_settings = rendering.getSettings();
+        split_settings.split_view_mode = SplitViewMode::IndependentDual;
+        rendering.updateSettings(split_settings);
+        rendering.setGridPlaneForPanel(SplitViewPanelId::Left, 0);
+        rendering.setGridPlaneForPanel(SplitViewPanelId::Right, 1);
+        ASSERT_EQ(rendering.getGridPlaneForPanel(SplitViewPanelId::Left), 0);
+        ASSERT_EQ(rendering.getGridPlaneForPanel(SplitViewPanelId::Right), 1);
+        require_status(viewer.project_lifecycle_->newProject(ProjectSwitchDisposition::DiscardChanges));
+        EXPECT_EQ(input.navigationUpAxis(), NavigationUpAxis::DataZ);
+        EXPECT_EQ(rendering.getGridPlaneForPanel(SplitViewPanelId::Left), 0);
+        // NewProject closes independent split mode, keeping the primary plane.
+        // An older project retains historical Y even with a global Z default.
+        applyGuiSession(viewer, require_result(prepareGuiSessionRestore(captured)), bookmarks);
+        EXPECT_EQ(input.navigationUpAxis(), NavigationUpAxis::LegacyY);
+        ASSERT_TRUE(viewer.getParameterManager()->ensureLoaded());
+        ASSERT_NE(viewer.getScene().addGroup("Saved geometry"), lfs::core::NULL_NODE);
+        const auto master = temporary_.path / "navigation.licht";
+        const auto recovered = temporary_.path / "navigation-recovered.licht";
+        const auto sidecar = autosave_sidecar_path(master);
+        input.setNavigationUpAxis(NavigationUpAxis::DataZ, true);
+        require_status(viewer.projectSaveAs(master, false));
+        ASSERT_TRUE(pumpUntil(viewer.work_queue_mutex_, viewer.work_queue_, [&] {
+            return !viewer.jobs().anyRunning(JobType::ProjectWrite);
+        }));
+        input.setNavigationUpAxis(NavigationUpAxis::LegacyY);
+        // Session-only changes follow master's existing autosave policy.
+        require_status(viewer.project_lifecycle_->startAutosave());
+        EXPECT_FALSE(std::filesystem::exists(sidecar));
+        ASSERT_NE(viewer.getScene().addGroup("Autosaved geometry"), lfs::core::NULL_NODE);
+        require_status(viewer.project_lifecycle_->startAutosave());
+        ASSERT_TRUE(pumpUntil(viewer.work_queue_mutex_, viewer.work_queue_, [&] {
+            return !viewer.jobs().anyRunning(JobType::ProjectWrite);
+        }));
+        ASSERT_TRUE(std::filesystem::is_regular_file(sidecar));
+        require_status(materialize_recovered_project(master, sidecar, recovered));
+        auto saved_document = require_result(ProjectDocument::open(master));
+        auto recovered_document = require_result(ProjectDocument::open(recovered));
+        EXPECT_EQ(saved_document.view().dom().get_json("navigation.up_axis"), lfs::io::JsonChapterDom::Json("data_z"));
+        EXPECT_EQ(recovered_document.view().dom().get_json("navigation.up_axis"), lfs::io::JsonChapterDom::Json("legacy_y"));
+        require_status(viewer.projectSave(false));
+        ASSERT_TRUE(pumpUntil(viewer.work_queue_mutex_, viewer.work_queue_, [&] {
+            return !viewer.jobs().anyRunning(JobType::ProjectWrite);
+        }));
+        auto explicitly_saved = require_result(ProjectDocument::open(master));
+        EXPECT_EQ(explicitly_saved.view().dom().get_json("navigation.up_axis"), lfs::io::JsonChapterDom::Json("legacy_y"));
+        // Exercise the real project-open/save path as well as session preflight.
+        int index = 0;
+        for (const auto unknown : {nlohmann::json("future_up"), nlohmann::json(2),
+                                   nlohmann::json(nullptr), nlohmann::json(true),
+                                   nlohmann::json::array(), nlohmann::json::object()}) {
+            SCOPED_TRACE(unknown.dump());
+            auto document = lfs::test::licht::make_empty_document(lfs::core::generate_uuid_v4());
+            require_status(document->edit_view().dom().set_json("navigation.up_axis", unknown));
+            require_status(document->edit_view().dom().set_json("navigation.future_option", "preserved"));
+            const auto path = temporary_.path / ("future-up-" + std::to_string(index++) + ".licht");
+            ASSERT_TRUE(document->save(path));
+            VisualizerImpl viewer(projectOptions());
+            ASSERT_TRUE(viewer.getParameterManager()->ensureLoaded());
+            viewer.input_controller_ = std::make_unique<InputController>(nullptr, viewer.getViewport());
+            viewer.input_controller_->setViewer(&viewer);
+            viewer.input_controller_->setNavigationUpAxis(NavigationUpAxis::DataZ);
+            auto opened = viewer.projectOpen(path, ProjectSwitchDisposition::DiscardChanges);
+            ASSERT_TRUE(opened);
+            EXPECT_EQ(*opened, ProjectOpenOutcome::Opened);
+            ASSERT_TRUE(waitForHydrationComplete(viewer, viewer.work_queue_mutex_, viewer.work_queue_));
+            viewer.input_controller_->setNavigationUpAxis(NavigationUpAxis::DataZ);
+            viewer.noteGuiSessionRestoreOwnerReady(1);
+            EXPECT_EQ(viewer.input_controller_->navigationUpAxis(), NavigationUpAxis::LegacyY);
+            require_status(viewer.projectSave(false));
+            ASSERT_TRUE(pumpUntil(viewer.work_queue_mutex_, viewer.work_queue_, [&] {
+                return !viewer.jobs().anyRunning(JobType::ProjectWrite);
+            }));
+            auto saved = ProjectDocument::open(path);
+            ASSERT_TRUE(saved);
+            EXPECT_EQ(saved->view().dom().get_json("navigation.up_axis"), nlohmann::json("legacy_y"));
+            EXPECT_EQ(saved->view().dom().get_json("navigation.future_option"), nlohmann::json("preserved"));
+        }
     }
 
     TEST_F(VisualizerImplResetTest, SequencerCaptureDropsRemovedTailAndPreservesExtensions) {
@@ -6068,6 +6268,299 @@ contract["check_selection_submode_follows_native_mode"](lf)
         EXPECT_EQ(manager->getSelectedNodeName(), "async-single");
     }
 
+    class SplatSimplifyCompletionTest : public VisualizerImplResetTest {
+    protected:
+        void startAndWaitForResult(VisualizerImpl& viewer) {
+            auto& tasks = viewer.getGuiManager()->asyncTasks();
+            core::SplatSimplifyOptions options;
+            options.ratio = 1.0;
+            options.opacity_prune_threshold = 0.0;
+            tasks.startSplatSimplify("source", options);
+            ASSERT_TRUE(tasks.isSplatSimplifyActive());
+            ASSERT_TRUE(waitUntil([&] { return tasks.hasPendingMainThreadCompletions(); }));
+            ASSERT_TRUE(tasks.getSplatSimplifyError().empty());
+        }
+
+        void expectDiscarded(VisualizerImpl& viewer) {
+            auto& tasks = viewer.getGuiManager()->asyncTasks();
+            tasks.pollSplatSimplifyCompletion();
+            EXPECT_FALSE(tasks.isSplatSimplifyActive());
+            EXPECT_FALSE(tasks.hasPendingMainThreadCompletions());
+            EXPECT_TRUE(tasks.getSplatSimplifyError().empty());
+            EXPECT_EQ(tasks.getSplatSimplifyStage(), LOC(lichtfeld::Strings::Runtime::TASK_CANCELLED));
+            EXPECT_EQ(viewer.getScene().getNode("source_2"), nullptr);
+        }
+    };
+
+    TEST_F(SplatSimplifyCompletionTest, NewProjectDiscardsReadyResult) {
+        VisualizerImpl viewer(projectOptions());
+        viewer.getScene().addSplat("source", lfs::test::licht::make_splat(2));
+        ASSERT_NO_FATAL_FAILURE(startAndWaitForResult(viewer));
+        core::events::cmd::NewProject{.discard_changes = true}.emit();
+        ASSERT_EQ(viewer.getScene().getNodeCount(), 0u);
+        expectDiscarded(viewer);
+        EXPECT_EQ(viewer.getScene().getNodeCount(), 0u);
+        EXPECT_TRUE(viewer.getSceneManager()->getSelectedNodeNames().empty());
+        EXPECT_FALSE(op::undoHistory().canUndo());
+    }
+
+    TEST_F(SplatSimplifyCompletionTest, NewProjectWithSameNameDiscardsReadyResult) {
+        VisualizerImpl viewer(projectOptions());
+        viewer.getScene().addSplat("source", lfs::test::licht::make_splat(2));
+        ASSERT_NO_FATAL_FAILURE(startAndWaitForResult(viewer));
+        core::events::cmd::NewProject{.discard_changes = true}.emit();
+        const auto replacement = viewer.getScene().addSplat("source", lfs::test::licht::make_splat(3));
+        viewer.getSceneManager()->selectNode(replacement);
+        expectDiscarded(viewer);
+        EXPECT_EQ(viewer.getScene().getNodeCount(), 1u);
+        EXPECT_EQ(viewer.getScene().getNode("source")->model->size(), 3u);
+        EXPECT_EQ(viewer.getSceneManager()->getSelectedNodeName(), "source");
+    }
+
+    TEST_F(SplatSimplifyCompletionTest, ReplacedSceneWithRestoredUuidDiscardsReadyResult) {
+        VisualizerImpl viewer(projectOptions());
+        auto& scene = viewer.getScene();
+        const auto source = scene.addSplat("source", lfs::test::licht::make_splat(2));
+        const auto uuid = scene.getNodeById(source)->uuid;
+        ASSERT_NO_FATAL_FAILURE(startAndWaitForResult(viewer));
+        scene.clear();
+        ASSERT_NE(scene.restoreNodeWithUuid({
+                      .uuid = uuid,
+                      .type = core::NodeType::SPLAT,
+                      .name = "source",
+                      .gaussian_count = 3,
+                      .model = lfs::test::licht::make_splat(3),
+                  }),
+                  core::NULL_NODE);
+        expectDiscarded(viewer);
+        EXPECT_EQ(scene.getNodeCount(), 1u);
+        EXPECT_EQ(scene.getNode("source")->model->size(), 3u);
+    }
+
+    TEST_F(SplatSimplifyCompletionTest, IdlePollingCost) {
+        VisualizerImpl viewer(projectOptions());
+        auto& tasks = viewer.getGuiManager()->asyncTasks();
+        constexpr int iterations = 1000000;
+        const auto start = std::chrono::steady_clock::now();
+        for (int i = 0; i < iterations; ++i)
+            tasks.pollSplatSimplifyCompletion();
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+        std::cout << "Idle simplify poll ns/update: "
+                  << std::chrono::duration<double, std::nano>(elapsed).count() / iterations << '\n';
+        EXPECT_FALSE(tasks.isSplatSimplifyActive());
+    }
+
+    TEST_F(SplatSimplifyCompletionTest, RemovedSourceDiscardsReadyResult) {
+        VisualizerImpl viewer(projectOptions());
+        viewer.getScene().addSplat("source", lfs::test::licht::make_splat(2));
+        ASSERT_NO_FATAL_FAILURE(startAndWaitForResult(viewer));
+        viewer.getScene().removeNode("source");
+        // A label reused inside the same scene must not adopt the old result.
+        viewer.getScene().addSplat("source", lfs::test::licht::make_splat(3));
+        expectDiscarded(viewer);
+        EXPECT_EQ(viewer.getScene().getNodeCount(), 1u);
+        EXPECT_EQ(viewer.getScene().getNode("source")->model->size(), 3u);
+    }
+
+    TEST_F(SplatSimplifyCompletionTest, CancelDiscardsReadyResult) {
+        VisualizerImpl viewer(projectOptions());
+        viewer.getScene().addSplat("source", lfs::test::licht::make_splat(2));
+        ASSERT_NO_FATAL_FAILURE(startAndWaitForResult(viewer));
+        viewer.getGuiManager()->asyncTasks().cancelSplatSimplify();
+        expectDiscarded(viewer);
+        EXPECT_EQ(viewer.getScene().getNodeCount(), 1u);
+        EXPECT_EQ(viewer.getScene().getNode("source")->model->size(), 2u);
+    }
+
+    TEST_F(SplatSimplifyCompletionTest, UnchangedSourcePreservesPlacementAndHistory) {
+        VisualizerImpl viewer(projectOptions());
+        auto& scene = viewer.getScene();
+        const auto parent = scene.addGroup("parent");
+        const auto source = scene.addSplat("source", lfs::test::licht::make_splat(2), parent);
+        const auto transform = glm::translate(glm::mat4(1.0f), glm::vec3(5.0f, 2.0f, 3.0f));
+        scene.setNodeTransform(source, transform);
+        ASSERT_NO_FATAL_FAILURE(startAndWaitForResult(viewer));
+        // Changes to other scenes and unrelated nodes do not invalidate the work.
+        core::Scene other;
+        other.clear();
+        const auto unrelated = scene.addGroup("unrelated");
+        scene.removeNodeById(unrelated);
+        auto& tasks = viewer.getGuiManager()->asyncTasks();
+        tasks.pollSplatSimplifyCompletion();
+        ASSERT_FALSE(tasks.isSplatSimplifyActive());
+        EXPECT_TRUE(tasks.getSplatSimplifyError().empty());
+        const auto* result = scene.getNode("source_2");
+        ASSERT_NE(result, nullptr);
+        EXPECT_EQ(result->parent_id, parent);
+        EXPECT_EQ(result->local_transform.get(), transform);
+        EXPECT_EQ(result->model->size(), 2u);
+        EXPECT_EQ(viewer.getSceneManager()->getSelectedNodeName(), "source_2");
+        ASSERT_TRUE(op::undoHistory().undo().success);
+        EXPECT_EQ(scene.getNode("source_2"), nullptr);
+        EXPECT_NE(scene.getNode("source"), nullptr);
+        ASSERT_TRUE(op::undoHistory().redo().success);
+        ASSERT_NE(scene.getNode("source_2"), nullptr);
+        EXPECT_EQ(scene.getNode("source_2")->local_transform.get(), transform);
+    }
+
+    TEST_F(SplatSimplifyCompletionTest, RenamedSourcePreservesPlacement) {
+        VisualizerImpl viewer(projectOptions());
+        auto& scene = viewer.getScene();
+        const auto parent = scene.addGroup("parent");
+        const auto source = scene.addSplat("source", lfs::test::licht::make_splat(2), parent);
+        const auto transform = glm::translate(glm::mat4(1.0f), glm::vec3(5.0f, 2.0f, 3.0f));
+        scene.setNodeTransform(source, transform);
+        ASSERT_NO_FATAL_FAILURE(startAndWaitForResult(viewer));
+        scene.renameNode("source", "renamed");
+        viewer.getGuiManager()->asyncTasks().pollSplatSimplifyCompletion();
+        const auto* result = scene.getNode("source_2");
+        ASSERT_NE(result, nullptr);
+        EXPECT_EQ(result->parent_id, parent);
+        EXPECT_EQ(result->local_transform.get(), transform);
+    }
+
+    class SplatSimplifyIdentityTest : public VisualizerImplResetTest {
+    protected:
+        void startAndWaitForResult(VisualizerImpl& viewer) {
+            auto& tasks = viewer.getGuiManager()->asyncTasks();
+            core::SplatSimplifyOptions options;
+            options.ratio = 1.0;
+            options.opacity_prune_threshold = 0.0;
+            tasks.startSplatSimplify("source", options);
+            ASSERT_TRUE(tasks.isSplatSimplifyActive());
+            ASSERT_TRUE(waitUntil([&] { return tasks.hasPendingMainThreadCompletions(); }));
+            ASSERT_TRUE(tasks.getSplatSimplifyError().empty());
+        }
+
+        void expectDiscarded(VisualizerImpl& viewer) {
+            auto& tasks = viewer.getGuiManager()->asyncTasks();
+            tasks.pollSplatSimplifyCompletion();
+            EXPECT_FALSE(tasks.isSplatSimplifyActive());
+            EXPECT_FALSE(tasks.hasPendingMainThreadCompletions());
+            EXPECT_TRUE(tasks.getSplatSimplifyError().empty());
+            EXPECT_EQ(tasks.getSplatSimplifyStage(), LOC(lichtfeld::Strings::Runtime::TASK_CANCELLED));
+            EXPECT_EQ(viewer.getScene().getNode("source_2"), nullptr);
+        }
+    };
+
+    TEST_F(SplatSimplifyIdentityTest, IdlePollingCost) {
+        VisualizerImpl viewer(projectOptions());
+        auto& tasks = viewer.getGuiManager()->asyncTasks();
+        constexpr int iterations = 1000000;
+        const auto start = std::chrono::steady_clock::now();
+        for (int i = 0; i < iterations; ++i)
+            tasks.pollSplatSimplifyCompletion();
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+        std::cout << "Idle simplify poll ns/update: "
+                  << std::chrono::duration<double, std::nano>(elapsed).count() / iterations << '\n';
+        EXPECT_FALSE(tasks.isSplatSimplifyActive());
+    }
+
+    TEST_F(SplatSimplifyIdentityTest, RemovedSourceDiscardsReadyResult) {
+        VisualizerImpl viewer(projectOptions());
+        viewer.getScene().addSplat("source", lfs::test::licht::make_splat(2));
+        ASSERT_NO_FATAL_FAILURE(startAndWaitForResult(viewer));
+        viewer.getScene().removeNode("source");
+        // A label reused inside the same scene must not adopt the old result.
+        viewer.getScene().addSplat("source", lfs::test::licht::make_splat(3));
+        expectDiscarded(viewer);
+        EXPECT_EQ(viewer.getScene().getNodeCount(), 1u);
+        EXPECT_EQ(viewer.getScene().getNode("source")->model->size(), 3u);
+    }
+
+    TEST_F(SplatSimplifyIdentityTest, UnchangedSourcePreservesPlacementAndHistory) {
+        VisualizerImpl viewer(projectOptions());
+        auto& scene = viewer.getScene();
+        const auto parent = scene.addGroup("parent");
+        const auto source = scene.addSplat("source", lfs::test::licht::make_splat(2), parent);
+        const auto transform = glm::scale(
+            glm::rotate(glm::translate(glm::mat4(1.0f), glm::vec3(5.0f, 2.0f, 3.0f)),
+                        0.4f, glm::normalize(glm::vec3(1.0f, 2.0f, 3.0f))),
+            glm::vec3(2.0f, 3.0f, 4.0f));
+        scene.setNodeTransform(source, transform);
+        ASSERT_NO_FATAL_FAILURE(startAndWaitForResult(viewer));
+        // Changes to other scenes and unrelated nodes do not invalidate the work.
+        core::Scene other;
+        other.clear();
+        const auto unrelated = scene.addGroup("unrelated");
+        scene.removeNodeById(unrelated);
+        auto& tasks = viewer.getGuiManager()->asyncTasks();
+        tasks.pollSplatSimplifyCompletion();
+        ASSERT_FALSE(tasks.isSplatSimplifyActive());
+        EXPECT_TRUE(tasks.getSplatSimplifyError().empty());
+        const auto* result = scene.getNode("source_2");
+        ASSERT_NE(result, nullptr);
+        EXPECT_EQ(result->parent_id, parent);
+        EXPECT_EQ(result->local_transform.get(), transform);
+        EXPECT_EQ(result->model->size(), 2u);
+        EXPECT_EQ(viewer.getSceneManager()->getSelectedNodeName(), "source_2");
+        ASSERT_TRUE(op::undoHistory().undo().success);
+        EXPECT_EQ(scene.getNode("source_2"), nullptr);
+        EXPECT_NE(scene.getNode("source"), nullptr);
+        ASSERT_TRUE(op::undoHistory().redo().success);
+        ASSERT_NE(scene.getNode("source_2"), nullptr);
+        EXPECT_EQ(scene.getNode("source_2")->local_transform.get(), transform);
+    }
+
+    TEST_F(SplatSimplifyIdentityTest, RenamedSourcePreservesPlacement) {
+        VisualizerImpl viewer(projectOptions());
+        auto& scene = viewer.getScene();
+        const auto parent = scene.addGroup("parent");
+        const auto source = scene.addSplat("source", lfs::test::licht::make_splat(2), parent);
+        const auto transform = glm::scale(
+            glm::rotate(glm::translate(glm::mat4(1.0f), glm::vec3(5.0f, 2.0f, 3.0f)),
+                        0.4f, glm::normalize(glm::vec3(1.0f, 2.0f, 3.0f))),
+            glm::vec3(2.0f, 3.0f, 4.0f));
+        scene.setNodeTransform(source, transform);
+        ASSERT_NO_FATAL_FAILURE(startAndWaitForResult(viewer));
+        scene.renameNode("source", "renamed");
+        viewer.getGuiManager()->asyncTasks().pollSplatSimplifyCompletion();
+        const auto* result = scene.getNode("source_2");
+        ASSERT_NE(result, nullptr);
+        EXPECT_EQ(result->parent_id, parent);
+        EXPECT_EQ(result->local_transform.get(), transform);
+    }
+
+    TEST_F(SplatSimplifyIdentityTest, ReusedSourceLabelDoesNotChangePlacement) {
+        VisualizerImpl viewer(projectOptions());
+        auto& scene = viewer.getScene();
+        const auto parent = scene.addGroup("parent");
+        const auto source = scene.addSplat("source", lfs::test::licht::make_splat(2), parent);
+        const auto transform = glm::scale(
+            glm::rotate(glm::translate(glm::mat4(1.0f), glm::vec3(5.0f, 2.0f, 3.0f)),
+                        0.4f, glm::normalize(glm::vec3(1.0f, 2.0f, 3.0f))),
+            glm::vec3(2.0f, 3.0f, 4.0f));
+        scene.setNodeTransform(source, transform);
+        ASSERT_NO_FATAL_FAILURE(startAndWaitForResult(viewer));
+        scene.renameNode("source", "renamed");
+        scene.addSplat("source", lfs::test::licht::make_splat(3));
+        viewer.getGuiManager()->asyncTasks().pollSplatSimplifyCompletion();
+        const auto* result = scene.getNode("source_2");
+        ASSERT_NE(result, nullptr);
+        EXPECT_EQ(result->parent_id, parent);
+        EXPECT_EQ(result->local_transform.get(), transform);
+    }
+
+    TEST_F(SplatSimplifyIdentityTest, RenamedSourceInheritsLatestPlacement) {
+        VisualizerImpl viewer(projectOptions());
+        auto& scene = viewer.getScene();
+        const auto parent = scene.addGroup("parent");
+        const auto source = scene.addSplat("source", lfs::test::licht::make_splat(2), parent);
+        const auto transform = glm::scale(
+            glm::rotate(glm::translate(glm::mat4(1.0f), glm::vec3(5.0f, 2.0f, 3.0f)),
+                        0.4f, glm::normalize(glm::vec3(1.0f, 2.0f, 3.0f))),
+            glm::vec3(2.0f, 3.0f, 4.0f));
+
+        ASSERT_NO_FATAL_FAILURE(startAndWaitForResult(viewer));
+        scene.renameNode("source", "renamed");
+        scene.setNodeTransform(source, transform);
+        viewer.getGuiManager()->asyncTasks().pollSplatSimplifyCompletion();
+        const auto* result = scene.getNode("source_2");
+        ASSERT_NE(result, nullptr);
+        EXPECT_EQ(result->parent_id, parent);
+        EXPECT_EQ(result->local_transform.get(), transform);
+    }
+
     TEST_F(VisualizerImplResetTest, AsyncSplatBatchAttachesInInputOrder) {
         const auto first = temporary_.path / "async-missing-first.ply";
         const auto second = temporary_.path / "async-second.ply";
@@ -6088,6 +6581,10 @@ contract["check_selection_submode_follows_native_mode"](lf)
         ASSERT_NE(manager->getScene().addGroup("before-batch"), lfs::core::NULL_NODE);
         ASSERT_TRUE(viewer.getDataLoader()->loadSplatFiles({first, second, third}));
         auto& tasks = viewer.getGuiManager()->asyncTasks();
+        ASSERT_TRUE(waitUntil([&] {
+            const auto job = viewer.jobs().active(JobType::Import);
+            return job && job->status == JobStatus::CompletionPending;
+        }));
         ASSERT_TRUE(waitUntil(
             [&] {
                 tasks.pollImportCompletion();
@@ -6096,6 +6593,8 @@ contract["check_selection_submode_follows_native_mode"](lf)
 
         ASSERT_NE(manager->getScene().getNode("async-second"), nullptr);
         ASSERT_NE(manager->getScene().getNode("async-third"), nullptr);
+        EXPECT_NE(manager->getScene().getNode("async-second")->model, nullptr);
+        EXPECT_NE(manager->getScene().getNode("async-third")->model, nullptr);
         EXPECT_EQ(manager->getScene().getNode("before-batch"), nullptr);
         ASSERT_EQ(manager->getScene().getNodes().size(), 2u);
         EXPECT_EQ(manager->getScene().getNodes()[0]->name, "async-second");
@@ -6451,12 +6950,12 @@ contract["check_selection_submode_follows_native_mode"](lf)
             EXPECT_NE(node->model, nullptr);
     }
 
-    TEST_F(VisualizerImplResetTest, LegacyMultiFileLoadStillConsolidates) {
+    TEST_F(VisualizerImplResetTest, LegacyMultiFileLoadKeepsNodePayloads) {
         VisualizerImpl viewer(projectOptions());
         ASSERT_TRUE(viewer.getDataLoader()->loadSplatFiles({makeSplatFixture("legacy-first"), makeSplatFixture("legacy-second")}));
         auto& tasks = viewer.getGuiManager()->asyncTasks();
-        // Check the legacy final-consolidation policy with all files staged,
-        // independently of the worker/main-thread completion timing.
+        // Check final batch attachment with all files staged, independently
+        // of the worker/main-thread completion timing.
         ASSERT_TRUE(waitUntil([&] {
             const auto job = viewer.jobs().active(JobType::Import);
             return job && job->status == JobStatus::CompletionPending;
@@ -6467,7 +6966,7 @@ contract["check_selection_submode_follows_native_mode"](lf)
         }));
         ASSERT_EQ(viewer.getScene().getNodes().size(), 2u);
         for (const auto* node : viewer.getScene().getNodes())
-            EXPECT_EQ(node->model, nullptr);
+            EXPECT_NE(node->model, nullptr);
         ASSERT_NE(viewer.getScene().getCombinedModel(), nullptr);
         EXPECT_EQ(viewer.getScene().getCombinedModel()->size(), 4u);
     }
@@ -6589,6 +7088,119 @@ contract["check_selection_submode_follows_native_mode"](lf)
         }));
         EXPECT_EQ(viewer.getSceneManager()->getSelectedNodeName(), "user-choice");
         EXPECT_EQ(viewer.getScene().getNode("selection-second"), nullptr);
+    }
+
+    class AsyncSplatPayloadTest : public VisualizerImplResetTest {
+    protected:
+        void checkPayloads(const bool batch, const bool user_batch, const bool append) {
+            const auto first = makeSplatFixture("payload-first");
+            const auto second = makeSplatFixture("payload-second");
+            VisualizerImpl viewer(projectOptions());
+            auto* manager = viewer.getSceneManager();
+            manager->loadSplatFile(first);
+            const auto reference = manager->getScene().getNode("payload-first")->model->clone();
+            ASSERT_TRUE(viewer.clearScene());
+            if (append) {
+                manager->loadSplatFile(makeSplatFixture("payload-existing"));
+                manager->getScene().setNodeVisibility("payload-existing", false);
+                manager->getScene().setNodeTransform("payload-existing", glm::translate(glm::mat4(1.0f), glm::vec3(2, 3, 4)));
+            }
+            auto& tasks = viewer.getGuiManager()->asyncTasks();
+            const auto wait = [&] {
+                return waitUntil([&] {
+                    tasks.pollImportCompletion();
+                    return !tasks.isImporting() && !tasks.hasPendingMainThreadCompletions();
+                });
+            };
+            if (batch) {
+                core::events::cmd::LoadFile{.path = first, .is_dataset = false, .paths = {first, second}, .user_batch = user_batch}
+                    .emit();
+                if (!user_batch) {
+                    // Exercise final batch attachment independently of worker timing.
+                    ASSERT_TRUE(waitUntil([&] {
+                        const auto job = viewer.jobs().active(JobType::Import);
+                        return job && job->status == JobStatus::CompletionPending;
+                    }));
+                }
+                ASSERT_TRUE(wait());
+            } else {
+                for (const auto& path : {first, second}) {
+                    core::events::cmd::LoadFile{.path = path, .is_dataset = false}.emit();
+                    ASSERT_TRUE(wait());
+                }
+            }
+            auto& scene = manager->getScene();
+            ASSERT_EQ(scene.getNodes().size(), append ? 3u : 2u);
+            ASSERT_NE(scene.getCombinedModel(), nullptr);
+            const bool all_nodes_cache = batch && !user_batch;
+            EXPECT_EQ(scene.getCombinedModel()->size(), append && all_nodes_cache ? 6 : 4);
+            if (append && all_nodes_cache)
+                EXPECT_EQ(scene.getNodeVisibilityMask(), (std::vector<bool>{false, true, true}));
+            for (const auto* node : scene.getNodes()) {
+                SCOPED_TRACE(node->name);
+                ASSERT_NE(node->model, nullptr);
+                const auto& model = *node->model;
+                EXPECT_EQ(model.means_raw().to_vector(), reference.means_raw().to_vector());
+                EXPECT_EQ(model.sh0_raw().to_vector(), reference.sh0_raw().to_vector());
+                EXPECT_EQ(model.shN_canonical().to_vector(), reference.shN_canonical().to_vector());
+                EXPECT_EQ(model.scaling_raw().to_vector(), reference.scaling_raw().to_vector());
+                EXPECT_EQ(model.rotation_raw().to_vector(), reference.rotation_raw().to_vector());
+                EXPECT_EQ(model.opacity_raw().to_vector(), reference.opacity_raw().to_vector());
+                EXPECT_EQ(model.get_active_sh_degree(), reference.get_active_sh_degree());
+                EXPECT_TRUE(lfs::io::save_ply(model, {.output_path = temporary_.path / (node->name + "-export.ply"), .binary = true, .async = false}));
+            }
+            if (append) {
+                const auto* existing = scene.getNode("payload-existing");
+                EXPECT_FALSE(existing->visible);
+                EXPECT_EQ(existing->transform(), glm::translate(glm::mat4(1.0f), glm::vec3(2, 3, 4)));
+            }
+        }
+    };
+
+    TEST_F(AsyncSplatPayloadTest, ApiBatchRequestsBackgroundCombinedBuild) {
+        std::atomic<bool> worker_allocated{false};
+        const auto main_thread = std::this_thread::get_id();
+        VisualizerImpl viewer(projectOptions());
+        core::events::state::PLYAdded::when([&](const auto&) {
+            // Attachment installs its own allocator before emitting PLYAdded.
+            viewer.getScene().setCombinedModelAllocator(
+                [&](core::TensorShape shape, size_t, core::DataType dtype, std::string_view) {
+                    if (std::this_thread::get_id() != main_thread)
+                        worker_allocated.store(true);
+                    return core::Tensor::empty(std::move(shape), core::Device::CUDA, dtype);
+                });
+        });
+        const auto first = makeSplatFixture("background-first");
+        const auto second = makeSplatFixture("background-second");
+        core::events::cmd::LoadFile{.path = first, .is_dataset = false, .paths = {first, second}}.emit();
+        ASSERT_TRUE(waitUntil([&] {
+            const auto job = viewer.jobs().active(JobType::Import);
+            return job && job->status == JobStatus::CompletionPending;
+        }));
+        auto& tasks = viewer.getGuiManager()->asyncTasks();
+        ASSERT_TRUE(waitUntil([&] {
+            tasks.pollImportCompletion();
+            return !tasks.isImporting() && !tasks.hasPendingMainThreadCompletions();
+        }));
+        EXPECT_TRUE(worker_allocated.load());
+        ASSERT_NE(viewer.getScene().getCombinedModel(), nullptr);
+        EXPECT_EQ(viewer.getScene().getCombinedModel()->size(), 4);
+    }
+
+    TEST_F(AsyncSplatPayloadTest, ApiBatchKeepsReadableExportableModels) {
+        checkPayloads(true, false, false);
+    }
+
+    TEST_F(AsyncSplatPayloadTest, ApiBatchKeepsHiddenExistingModel) {
+        checkPayloads(true, false, true);
+    }
+
+    TEST_F(AsyncSplatPayloadTest, SeparateSingleLoadsKeepExactPayloads) {
+        checkPayloads(false, false, true);
+    }
+
+    TEST_F(AsyncSplatPayloadTest, UserBatchKeepsExactPayloads) {
+        checkPayloads(true, true, true);
     }
 
     TEST_F(VisualizerImplResetTest, MultiFileDropIntoEmptySceneLoadsEveryNode) {
@@ -7935,6 +8547,112 @@ contract["check_selection_submode_follows_native_mode"](lf)
         }
     }
 
+    TEST_F(VisualizerImplResetTest, RejectedDatasetPreservesProjectScene) {
+        const auto project = temporary_.path / "existing.licht";
+        write_splt_project(project, lfs::test::licht::make_splat(2), "First",
+                           lfs::test::licht::make_splat(3), "Second");
+        const auto original_bytes = lfs::test::licht::read_file_bytes(project);
+        const auto dataset = temporary_.path / "dataset";
+        write_minimal_transforms_dataset(dataset);
+        nlohmann::json valid;
+        std::ifstream(dataset / "transforms.json") >> valid;
+
+        VisualizerImpl viewer(projectOptions());
+        ASSERT_TRUE(viewer.getParameterManager()->ensureLoaded());
+        for (const auto& invalid : std::vector<nlohmann::json>{
+                 {{"fl_y", 0}},
+                 {{"fl_y", -1}},
+                 {{"camera_angle_x", 0}},
+                 {{"camera_angle_x", 3.141592653589793}}}) {
+            SCOPED_TRACE(invalid.dump());
+            auto transforms = valid;
+            transforms.update(invalid);
+            if (invalid.contains("camera_angle_x"))
+                transforms.erase("fl_x");
+            std::ofstream(dataset / "transforms.json") << transforms.dump();
+            ASSERT_TRUE(viewer.projectOpen(project, ProjectSwitchDisposition::DiscardChanges));
+            ASSERT_TRUE(waitUntil([&] {
+                viewer.pumpPostedWorkForProjectWrite();
+                const auto info = viewer.projectGetInfo();
+                return info && info->hydration_state == "complete";
+            }));
+            auto* const manager = viewer.getSceneManager();
+            manager->selectNode("First");
+            const auto before = viewer.projectGetInfo();
+            ASSERT_TRUE(before);
+            ASSERT_FALSE(before->dirty);
+            const auto* first = viewer.getScene().getNode("First");
+            const auto* second = viewer.getScene().getNode("Second");
+            ASSERT_NE(first, nullptr);
+            ASSERT_NE(second, nullptr);
+            core::param::TrainingParameters params;
+            params.no_download = true;
+            const auto rejected = manager->loadDataset(dataset, params);
+            ASSERT_FALSE(rejected);
+            EXPECT_NE(rejected.error().find("Transforms"), std::string::npos);
+            EXPECT_EQ(viewer.getScene().getNode("First"), first);
+            EXPECT_EQ(viewer.getScene().getNode("Second"), second);
+            EXPECT_EQ(manager->getSelectedNodeName(), "First");
+            const auto after = viewer.projectGetInfo();
+            ASSERT_TRUE(after);
+            EXPECT_FALSE(after->dirty);
+            EXPECT_EQ(after->path, before->path);
+            EXPECT_EQ(after->project_uuid, before->project_uuid);
+            ASSERT_EQ(after->payloads.size(), before->payloads.size());
+            for (size_t i = 0; i < before->payloads.size(); ++i) {
+                EXPECT_EQ(after->payloads[i].node_uuid, before->payloads[i].node_uuid);
+                EXPECT_EQ(after->payloads[i].hydration_state, before->payloads[i].hydration_state);
+            }
+            EXPECT_EQ(lfs::test::licht::read_file_bytes(project), original_bytes);
+        }
+    }
+
+    TEST_F(VisualizerImplResetTest, RejectedCheckpointDatasetPreservesScene) {
+        const auto dataset = temporary_.path / "dataset";
+        write_minimal_transforms_dataset(dataset);
+        nlohmann::json transforms;
+        std::ifstream(dataset / "transforms.json") >> transforms;
+        transforms["fl_y"] = 0;
+        std::ofstream(dataset / "transforms.json") << transforms.dump();
+        const auto checkpoint = temporary_.path / "model.resume";
+        const auto payload = make_training_autosave_checkpoint_payload(core::generate_uuid_v4(), dataset);
+        std::vector<std::byte> bytes(payload.size());
+        ASSERT_TRUE(payload.read_at(0, bytes));
+        lfs::test::licht::write_file_bytes(checkpoint, bytes);
+
+        VisualizerImpl viewer(projectOptions());
+        ASSERT_TRUE(viewer.getParameterManager()->ensureLoaded());
+        const auto id = viewer.getScene().addGroup("Existing");
+        auto* const existing = viewer.getScene().getNodeById(id);
+        core::param::TrainingParameters params;
+        params.no_download = true;
+        EXPECT_THROW(viewer.getSceneManager()->loadCheckpointForTraining(checkpoint, params), std::runtime_error);
+        EXPECT_EQ(viewer.getScene().getNode("Existing"), existing);
+    }
+
+    TEST_F(VisualizerImplResetTest, DatasetReplacementKeepsSuccessfulAndEarlyRejectionBehavior) {
+        VisualizerImpl viewer(projectOptions());
+        ASSERT_TRUE(viewer.getParameterManager()->ensureLoaded());
+        auto* const manager = viewer.getSceneManager();
+        const auto id = viewer.getScene().addGroup("Existing");
+        core::param::TrainingParameters params;
+        params.no_download = true;
+        params.optimization.init_num_pts = 8;
+        EXPECT_FALSE(manager->loadDataset(temporary_.path / "missing", params));
+        EXPECT_NE(viewer.getScene().getNodeById(id), nullptr);
+
+        const auto dataset = temporary_.path / "valid";
+        write_minimal_transforms_dataset(dataset);
+        const auto loaded = manager->loadDataset(dataset, params);
+        ASSERT_TRUE(loaded) << loaded.error();
+        EXPECT_EQ(viewer.getScene().getNode("Existing"), nullptr);
+        EXPECT_EQ(viewer.getScene().getAllCameras().size(), 1u);
+        ASSERT_NE(viewer.getScene().getInitialPointCloud(), nullptr);
+        EXPECT_EQ(viewer.getScene().getInitialPointCloud()->size(), 10000);
+        EXPECT_TRUE(viewer.getTrainerManager()->hasTrainer());
+        EXPECT_EQ(manager->getContentType(), SceneManager::ContentType::Dataset);
+    }
+
     TEST_F(VisualizerImplResetTest,
            LoadDatasetApiDoesNotDeferOrPrompt) {
         auto options = projectOptions();
@@ -7978,6 +8696,103 @@ contract["check_selection_submode_follows_native_mode"](lf)
                     "Keep on mcp load"),
                 nullptr);
         }
+    }
+
+    TEST_F(VisualizerImplResetTest,
+           DatasetApiReplacementKeepsPreviousProjectFile) {
+        if (!cuda_device_available()) {
+            GTEST_SKIP() << "CUDA device unavailable";
+        }
+        const auto first_dataset = temporary_.path / "first-dataset";
+        const auto second_dataset = temporary_.path / "second-dataset";
+        const auto project_path = temporary_.path / "first.licht";
+        write_minimal_transforms_dataset(first_dataset);
+        write_transforms_dataset_with_cameras(second_dataset, 2);
+        write_dataset_project_without_checkpoint(project_path, first_dataset);
+        const auto original_bytes = read_binary_file(project_path);
+        VisualizerImpl viewer(projectOptions());
+        ASSERT_TRUE(viewer.projectOpen(project_path));
+        ASSERT_TRUE(waitForHydrationComplete(
+            viewer, viewer.work_queue_mutex_, viewer.work_queue_));
+        const auto original_info = viewer.projectGetInfo();
+        ASSERT_TRUE(original_info);
+        ASSERT_TRUE(original_info->path);
+
+        // Invalid input must leave the current scene and binding intact.
+        EXPECT_FALSE(viewer.loadDataset(temporary_.path / "missing"));
+        ASSERT_TRUE(viewer.projectHasPath().value());
+        EXPECT_EQ(viewer.getScene().getAllCameras().size(), 1u);
+        EXPECT_TRUE(read_binary_file(project_path) == original_bytes);
+
+        auto params = viewer.getDataLoader()->getParameters();
+        params.optimization.iterations = 47;
+        viewer.setParameters(params);
+        const auto loaded = viewer.loadDataset(second_dataset);
+        ASSERT_TRUE(loaded) << loaded.error();
+        EXPECT_EQ(viewer.getScene().getAllCameras().size(), 2u);
+        EXPECT_EQ(viewer.getDataLoader()->getParameters().optimization.iterations, 47);
+        const auto replacement_info = viewer.projectGetInfo();
+        ASSERT_TRUE(replacement_info);
+        EXPECT_FALSE(replacement_info->path);
+        EXPECT_NE(replacement_info->project_uuid, original_info->project_uuid);
+        EXPECT_TRUE(read_binary_file(project_path) == original_bytes);
+        // An untitled replacement cannot silently append to the old project.
+        const auto saved = viewer.projectSave(false);
+        EXPECT_FALSE(saved);
+        if (saved) {
+            ASSERT_TRUE(pumpUntil(viewer.work_queue_mutex_, viewer.work_queue_, [&] {
+                const auto write = viewer.projectPollWrite();
+                return write && !write->running;
+            }));
+        }
+        EXPECT_TRUE(read_binary_file(project_path) == original_bytes);
+    }
+
+    TEST_F(VisualizerImplResetTest,
+           DatasetApiLoadIntoBlankProjectKeepsBinding) {
+        if (!cuda_device_available()) {
+            GTEST_SKIP() << "CUDA device unavailable";
+        }
+        const auto dataset_path = temporary_.path / "dataset";
+        const auto project_path = temporary_.path / "blank.licht";
+        write_minimal_transforms_dataset(dataset_path);
+        VisualizerImpl viewer(projectOptions());
+        ASSERT_TRUE(viewer.getParameterManager()->ensureLoaded());
+        viewer.input_controller_ = std::make_unique<InputController>(nullptr, viewer.getViewport());
+        const auto created = viewer.projectCreateAt(project_path);
+        ASSERT_TRUE(created) << lfs::format_for_developer(created.error());
+        const auto original_info = viewer.projectGetInfo();
+        ASSERT_TRUE(original_info);
+        const auto loaded = viewer.loadDataset(dataset_path);
+        ASSERT_TRUE(loaded) << loaded.error();
+        const auto info = viewer.projectGetInfo();
+        ASSERT_TRUE(info);
+        EXPECT_EQ(info->path, original_info->path);
+        EXPECT_EQ(info->project_uuid, original_info->project_uuid);
+        EXPECT_EQ(viewer.getScene().getAllCameras().size(), 1u);
+    }
+
+    TEST_F(VisualizerImplResetTest,
+           DatasetApiReplacementWithoutBindingKeepsSession) {
+        if (!cuda_device_available()) {
+            GTEST_SKIP() << "CUDA device unavailable";
+        }
+        const auto first_dataset = temporary_.path / "first-dataset";
+        const auto second_dataset = temporary_.path / "second-dataset";
+        write_minimal_transforms_dataset(first_dataset);
+        write_transforms_dataset_with_cameras(second_dataset, 2);
+        VisualizerImpl viewer(projectOptions());
+        ASSERT_TRUE(viewer.loadDataset(first_dataset));
+        const auto original_info = viewer.projectGetInfo();
+        ASSERT_TRUE(original_info);
+        ASSERT_FALSE(original_info->path);
+
+        ASSERT_TRUE(viewer.loadDataset(second_dataset));
+        const auto info = viewer.projectGetInfo();
+        ASSERT_TRUE(info);
+        EXPECT_FALSE(info->path);
+        EXPECT_EQ(info->project_uuid, original_info->project_uuid);
+        EXPECT_EQ(viewer.getScene().getAllCameras().size(), 2u);
     }
 
     TEST_F(VisualizerImplResetTest,
@@ -9253,6 +10068,39 @@ contract["check_selection_submode_follows_native_mode"](lf)
             EXPECT_EQ(after->path->lexically_normal(),
                       destination.lexically_normal());
             EXPECT_TRUE(viewer.allowclose());
+        }
+    }
+
+    TEST_F(VisualizerImplResetTest, SaveAfterSourceRemovalKeepsLiveSceneEdits) {
+        for (const bool save_as : {false, true}) {
+            SCOPED_TRACE(save_as);
+            const auto source = temporary_.path / (save_as ? "removed-as-source.licht" : "removed-save-source.licht");
+            const auto destination = save_as ? temporary_.path / "recovered-copy.licht" : source;
+            write_empty_project(source);
+            VisualizerImpl viewer(projectOptions());
+            ASSERT_TRUE(viewer.getParameterManager()->ensureLoaded());
+            viewer.input_controller_ = std::make_unique<InputController>(nullptr, viewer.getViewport());
+            ASSERT_TRUE(viewer.projectOpen(source, ProjectSwitchDisposition::DiscardChanges));
+            ASSERT_TRUE(waitForHydrationComplete(viewer, viewer.work_queue_mutex_, viewer.work_queue_));
+            ASSERT_NE(viewer.getScene().addGroup("Unsaved group"), lfs::core::NULL_NODE);
+            ASSERT_TRUE(std::filesystem::remove(source));
+            auto saved = save_as ? viewer.projectSaveAs(destination, false) : viewer.projectSave(false);
+            ASSERT_TRUE(saved) << lfs::format_for_developer(saved.error());
+            ASSERT_TRUE(pumpUntil(viewer.work_queue_mutex_, viewer.work_queue_, [&] {
+                return !viewer.jobs().anyRunning(JobType::ProjectWrite);
+            }));
+            ASSERT_TRUE(std::filesystem::exists(destination));
+            const auto info = viewer.projectGetInfo();
+            ASSERT_TRUE(info);
+            EXPECT_FALSE(info->dirty);
+            EXPECT_EQ(*info->path, destination);
+            auto reopened = lfs::test::licht::require_result(
+                lfs::io::project::ProjectDocument::open(destination));
+            const auto nodes = lfs::test::licht::require_result(reopened.scene_graph().nodes());
+            EXPECT_TRUE(std::ranges::any_of(nodes, [](const auto& node) { return node.name == "Unsaved group"; }));
+            if (save_as) {
+                EXPECT_FALSE(std::filesystem::exists(source));
+            }
         }
     }
 
@@ -17257,65 +18105,205 @@ contract["check_selection_submode_follows_native_mode"](lf)
         EXPECT_EQ(after_save.second, before.second);
     }
 
+    TEST(ViewportAppearanceCorrectionTest, StandaloneModesPreservePixelsAndUpdateCost) {
+        if (!cuda_device_available()) {
+            GTEST_SKIP() << "CUDA device unavailable";
+        }
+        SceneManager scene;
+        auto appearance = std::make_unique<lfs::training::PPISP>(100);
+        appearance->register_frame(0, 0);
+        appearance->register_frame(1, 0);
+        appearance->finalize();
+        appearance->seed_exposure({{0, 2.0f}, {1, -2.0f}});
+        auto* ppisp = appearance.get();
+        scene.setAppearanceModel(std::move(appearance));
+        auto input = std::make_shared<lfs::core::Tensor>(
+            lfs::core::Tensor::full({3, 420, 648}, 0.25f, lfs::core::Device::CUDA));
+        RenderSettings settings;
+        settings.apply_appearance_correction = false;
+        EXPECT_EQ(applyViewportAppearanceCorrection(input, &scene, settings, 0), input);
+        settings.apply_appearance_correction = true;
+        for (const int uid : {0, -1}) {
+            const auto expected = (uid == 0 ? ppisp->apply(*input, 0, 0)
+                                            : ppisp->apply_with_exposure(*input, 0, 0.0f))
+                                      .cpu()
+                                      .to_vector();
+            EXPECT_EQ(applyViewportAppearanceCorrection(input, &scene, settings, uid)->cpu().to_vector(), expected);
+        }
+        settings.ppisp_mode = RenderSettings::PPISPMode::MANUAL;
+        settings.ppisp_overrides.exposure_offset = 0.5f;
+        lfs::training::PPISPRenderOverrides overrides;
+        overrides.exposure_offset = 0.5f;
+        const auto expected = ppisp->apply_with_overrides(*input, 0, 0, overrides).cpu().to_vector();
+        EXPECT_EQ(applyViewportAppearanceCorrection(input, &scene, settings, 0)->cpu().to_vector(), expected);
+        for (int i = 0; i < 10; ++i)
+            (void)applyViewportAppearanceCorrection(input, &scene, settings, 0);
+        cudaDeviceSynchronize();
+        const auto start = std::chrono::steady_clock::now();
+        for (int i = 0; i < 200; ++i)
+            (void)applyViewportAppearanceCorrection(input, &scene, settings, 0);
+        cudaDeviceSynchronize();
+        std::cout << "appearance_update_us="
+                  << std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / 200
+                  << '\n';
+        std::stringstream snapshot;
+        ppisp->serialize(snapshot);
+        snapshot.seekg(0);
+        auto restored = std::make_unique<lfs::training::PPISP>(1);
+        restored->deserialize(snapshot);
+        SceneManager reopened;
+        reopened.setAppearanceModel(std::move(restored), nullptr, true);
+        // The stored training viewport keeps the live trainer's first-frame
+        // fallback for novel views, including manual controls.
+        EXPECT_EQ(applyViewportAppearanceCorrection(input, &reopened, settings, -1)->cpu().to_vector(), expected);
+        settings.ppisp_mode = RenderSettings::PPISPMode::AUTO;
+        const auto training_default = ppisp->apply(*input, 0, 0).cpu().to_vector();
+        EXPECT_EQ(applyViewportAppearanceCorrection(input, &reopened, settings, -1)->cpu().to_vector(), training_default);
+        settings.ppisp_mode = RenderSettings::PPISPMode::MANUAL;
+        for (int i = 0; i < 10; ++i)
+            (void)applyViewportAppearanceCorrection(input, &reopened, settings, 0);
+        cudaDeviceSynchronize();
+        const auto restored_start = std::chrono::steady_clock::now();
+        for (int i = 0; i < 200; ++i)
+            (void)applyViewportAppearanceCorrection(input, &reopened, settings, 0);
+        cudaDeviceSynchronize();
+        std::cout << "restored_appearance_update_us="
+                  << std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - restored_start).count() / 200
+                  << '\n';
+        scene.clearAppearanceModel();
+        EXPECT_EQ(applyViewportAppearanceCorrection(input, &scene, settings, 0), input);
+    }
+
+    TEST_F(VisualizerImplResetTest, LazyCheckpointReopenPreservesAppearance) {
+        if (!cuda_device_available()) {
+            GTEST_SKIP() << "CUDA device unavailable";
+        }
+        const auto project_path = temporary_.path / "appearance.licht";
+        const auto dataset_path = temporary_.path / "dataset";
+        write_minimal_transforms_dataset(dataset_path);
+        lfs::training::PPISP appearance(100);
+        appearance.register_frame(0, 0);
+        appearance.register_frame(1, 0);
+        appearance.finalize();
+        appearance.seed_exposure({{0, 2.0f}, {1, -2.0f}});
+        write_resumable_project_with_checkpoint(
+            project_path, lfs::core::generate_uuid_v4(),
+            lfs::core::generate_uuid_v4(), dataset_path,
+            lfs::io::project::TrainingFinishReason::None, 0, -1, false, 15000, &appearance);
+        const auto before = checkpoint_identity(project_path);
+        VisualizerImpl viewer(projectOptions());
+        ASSERT_TRUE(viewer.getParameterManager()->ensureLoaded());
+        ASSERT_TRUE(viewer.getWindowManager()->init());
+        viewer.input_controller_ = std::make_unique<InputController>(nullptr, viewer.getViewport());
+        ASSERT_TRUE(viewer.projectOpen(project_path, ProjectSwitchDisposition::DiscardChanges));
+        viewer.noteGuiSessionRestoreOwnerReady(1);
+        ASSERT_TRUE(waitForHydrationComplete(viewer, viewer.work_queue_mutex_, viewer.work_queue_));
+        EXPECT_FALSE(viewer.getTrainerManager()->hasTrainer());
+        EXPECT_FALSE(viewer.projectTrainingSessionState().hydrated);
+        auto* scene = viewer.getSceneManager();
+        ASSERT_TRUE(scene->hasAppearanceModel());
+        auto input = std::make_shared<lfs::core::Tensor>(
+            lfs::core::Tensor::full({3, 8, 8}, 0.25f, lfs::core::Device::CUDA));
+        RenderSettings settings;
+        settings.apply_appearance_correction = true;
+        const auto expected = appearance.apply(*input, 0, 0).cpu().to_vector();
+        EXPECT_EQ(applyViewportAppearanceCorrection(input, scene, settings, 0)->cpu().to_vector(), expected);
+        settings.apply_appearance_correction = false;
+        EXPECT_EQ(applyViewportAppearanceCorrection(input, scene, settings, 0), input);
+        const auto saved = viewer.projectSave(false);
+        ASSERT_TRUE(saved) << lfs::format_for_developer(saved.error());
+        ASSERT_TRUE(pumpUntil(viewer.work_queue_mutex_, viewer.work_queue_, [&] {
+            return !viewer.jobs().anyRunning(JobType::ProjectWrite);
+        }));
+        EXPECT_EQ(checkpoint_identity(project_path), before);
+        ASSERT_TRUE(restoreTrainerAndWait(viewer, viewer.work_queue_mutex_, viewer.work_queue_));
+        ASSERT_TRUE(pumpUntil(viewer.work_queue_mutex_, viewer.work_queue_, [&] {
+            return !scene->hasAppearanceModel();
+        }));
+        ASSERT_TRUE(viewer.getTrainerManager()->getTrainer()->hasPPISP());
+        settings.apply_appearance_correction = true;
+        EXPECT_EQ(applyViewportAppearanceCorrection(input, scene, settings, 0)->cpu().to_vector(), expected);
+    }
+
     TEST_F(VisualizerImplResetTest,
            StoredSessionAtPrmsIterationsReportsCompleted) {
         if (!cuda_device_available()) {
             GTEST_SKIP() << "CUDA device unavailable";
         }
-        const auto project_path =
-            temporary_.path / "stored-session-complete.licht";
-        const auto dataset_path =
-            temporary_.path / "stored-session-complete-dataset";
-        write_minimal_transforms_dataset(dataset_path);
-        write_resumable_project_with_checkpoint(
-            project_path,
-            lfs::core::generate_uuid_v4(),
-            lfs::core::generate_uuid_v4(),
-            dataset_path,
-            lfs::io::project::TrainingFinishReason::None,
-            0,
-            11);
+        struct Case {
+            int regular_iterations;
+            bool enable_sparsity;
+            int sparsify_steps;
+            lfs::io::project::TrainingFinishReason finish_reason;
+            int expected_total;
+        };
+        using Reason = lfs::io::project::TrainingFinishReason;
+        for (const auto& scenario : {
+                 Case{11, false, 4000, Reason::None, 11},
+                 Case{11, true, 0, Reason::None, 11},
+                 Case{7, true, 4, Reason::None, 11},
+                 Case{6, true, 4, Reason::None, 10},
+                 Case{7, true, 10, Reason::Completed, 17},
+             }) {
+            SCOPED_TRACE(::testing::Message() << "regular=" << scenario.regular_iterations
+                                              << " sparsity=" << scenario.enable_sparsity
+                                              << " tail=" << scenario.sparsify_steps
+                                              << " finish=" << static_cast<int>(scenario.finish_reason));
+            const auto project_path = temporary_.path / std::format(
+                                                            "completed-{}-{}-{}.licht", scenario.regular_iterations,
+                                                            scenario.sparsify_steps, static_cast<int>(scenario.finish_reason));
+            const auto dataset_path =
+                temporary_.path / "stored-session-complete-dataset";
+            write_minimal_transforms_dataset(dataset_path);
+            write_resumable_project_with_checkpoint(
+                project_path,
+                lfs::core::generate_uuid_v4(),
+                lfs::core::generate_uuid_v4(),
+                dataset_path,
+                scenario.finish_reason, 0, scenario.regular_iterations,
+                scenario.enable_sparsity, scenario.sparsify_steps);
 
-        auto options = projectOptions();
-        VisualizerImpl viewer(options);
-        ASSERT_TRUE(viewer.getParameterManager()
-                        ->ensureLoaded());
-        ASSERT_TRUE(viewer.getWindowManager()->init());
-        viewer.input_controller_ =
-            std::make_unique<InputController>(
-                nullptr, viewer.getViewport());
-        auto opened = viewer.projectOpen(
-            project_path,
-            ProjectSwitchDisposition::DiscardChanges);
-        ASSERT_TRUE(opened)
-            << lfs::format_for_developer(
-                   opened.error());
-        viewer.noteGuiSessionRestoreOwnerReady(1);
-        ASSERT_TRUE(waitForHydrationComplete(
-            viewer, viewer.work_queue_mutex_,
-            viewer.work_queue_));
-        ASSERT_FALSE(
-            viewer.getTrainerManager()->hasTrainer());
-        const auto session =
-            viewer.projectTrainingSessionState();
-        EXPECT_TRUE(session.available);
-        EXPECT_FALSE(session.hydrated);
-        EXPECT_EQ(session.iteration, 11);
-        EXPECT_EQ(session.max_iterations, 11);
-        EXPECT_TRUE(session.completed);
-        EXPECT_EQ(session.strategy, "mrnf");
+            auto options = projectOptions();
+            VisualizerImpl viewer(options);
+            ASSERT_TRUE(viewer.getParameterManager()
+                            ->ensureLoaded());
+            ASSERT_TRUE(viewer.getWindowManager()->init());
+            viewer.input_controller_ =
+                std::make_unique<InputController>(
+                    nullptr, viewer.getViewport());
+            auto opened = viewer.projectOpen(
+                project_path,
+                ProjectSwitchDisposition::DiscardChanges);
+            ASSERT_TRUE(opened)
+                << lfs::format_for_developer(
+                       opened.error());
+            viewer.noteGuiSessionRestoreOwnerReady(1);
+            ASSERT_TRUE(waitForHydrationComplete(
+                viewer, viewer.work_queue_mutex_,
+                viewer.work_queue_));
+            ASSERT_FALSE(
+                viewer.getTrainerManager()->hasTrainer());
+            const auto session =
+                viewer.projectTrainingSessionState();
+            EXPECT_TRUE(session.available);
+            EXPECT_FALSE(session.hydrated);
+            EXPECT_EQ(session.iteration, 11);
+            EXPECT_EQ(session.max_iterations, scenario.expected_total);
+            EXPECT_TRUE(session.completed);
+            EXPECT_EQ(session.strategy, "mrnf");
 
-        auto* const manager = viewer.getTrainerManager();
-        ASSERT_NE(manager, nullptr);
-        EXPECT_EQ(manager->getCurrentIteration(), 11);
-        EXPECT_EQ(manager->getTotalIterations(), 11);
-        EXPECT_EQ(manager->getState(), TrainingState::Finished);
-        EXPECT_FALSE(manager->canResume());
-        EXPECT_FALSE(manager->canStart());
-        EXPECT_FALSE(manager->canPause());
-        EXPECT_FALSE(manager->canStop());
-        EXPECT_STREQ(manager->getStrategyType(), "mrnf");
-        EXPECT_EQ(manager->getNumSplats(), 2);
+            auto* const manager = viewer.getTrainerManager();
+            ASSERT_NE(manager, nullptr);
+            EXPECT_EQ(manager->getCurrentIteration(), 11);
+            EXPECT_EQ(manager->getTotalIterations(), scenario.expected_total);
+            EXPECT_EQ(manager->getState(), TrainingState::Finished);
+            EXPECT_FALSE(manager->canResume());
+            EXPECT_FALSE(manager->canStart());
+            EXPECT_FALSE(manager->canPause());
+            EXPECT_FALSE(manager->canStop());
+            EXPECT_STREQ(manager->getStrategyType(), "mrnf");
+            EXPECT_EQ(manager->getNumSplats(), 2);
+        }
     }
 
     TEST_F(VisualizerImplResetTest,
@@ -17323,57 +18311,78 @@ contract["check_selection_submode_follows_native_mode"](lf)
         if (!cuda_device_available()) {
             GTEST_SKIP() << "CUDA device unavailable";
         }
-        const auto project_path =
-            temporary_.path / "stored-session-paused.licht";
-        const auto dataset_path =
-            temporary_.path / "stored-session-paused-dataset";
-        write_minimal_transforms_dataset(dataset_path);
-        write_resumable_project_with_checkpoint(
-            project_path,
-            lfs::core::generate_uuid_v4(),
-            lfs::core::generate_uuid_v4(),
-            dataset_path);
+        struct Case {
+            int regular_iterations;
+            bool enable_sparsity;
+            int sparsify_steps;
+            lfs::io::project::TrainingFinishReason finish_reason;
+            int expected_total;
+        };
+        using Reason = lfs::io::project::TrainingFinishReason;
+        for (const auto& scenario : {
+                 Case{30000, false, 4000, Reason::None, 30000},
+                 Case{11, true, 4, Reason::None, 15},
+                 Case{7, true, 10, Reason::None, 17},
+                 Case{7, true, 10, Reason::UserStopped, 17},
+             }) {
+            SCOPED_TRACE(::testing::Message() << "regular=" << scenario.regular_iterations
+                                              << " sparsity=" << scenario.enable_sparsity
+                                              << " tail=" << scenario.sparsify_steps
+                                              << " finish=" << static_cast<int>(scenario.finish_reason));
+            const auto project_path = temporary_.path / std::format(
+                                                            "paused-{}-{}-{}.licht", scenario.regular_iterations,
+                                                            scenario.sparsify_steps, static_cast<int>(scenario.finish_reason));
+            const auto dataset_path =
+                temporary_.path / "stored-session-paused-dataset";
+            write_minimal_transforms_dataset(dataset_path);
+            write_resumable_project_with_checkpoint(
+                project_path,
+                lfs::core::generate_uuid_v4(),
+                lfs::core::generate_uuid_v4(),
+                dataset_path, scenario.finish_reason, 0, scenario.regular_iterations,
+                scenario.enable_sparsity, scenario.sparsify_steps);
 
-        auto options = projectOptions();
-        VisualizerImpl viewer(options);
-        ASSERT_TRUE(viewer.getParameterManager()
-                        ->ensureLoaded());
-        ASSERT_TRUE(viewer.getWindowManager()->init());
-        viewer.input_controller_ =
-            std::make_unique<InputController>(
-                nullptr, viewer.getViewport());
-        auto opened = viewer.projectOpen(
-            project_path,
-            ProjectSwitchDisposition::DiscardChanges);
-        ASSERT_TRUE(opened)
-            << lfs::format_for_developer(
-                   opened.error());
-        viewer.noteGuiSessionRestoreOwnerReady(1);
-        ASSERT_TRUE(waitForHydrationComplete(
-            viewer, viewer.work_queue_mutex_,
-            viewer.work_queue_));
-        ASSERT_FALSE(
-            viewer.getTrainerManager()->hasTrainer());
-        const auto session =
-            viewer.projectTrainingSessionState();
-        EXPECT_TRUE(session.available);
-        EXPECT_FALSE(session.hydrated);
-        EXPECT_EQ(session.iteration, 11);
-        EXPECT_EQ(session.max_iterations, 30000);
-        EXPECT_FALSE(session.completed);
-        EXPECT_EQ(session.strategy, "mrnf");
+            auto options = projectOptions();
+            VisualizerImpl viewer(options);
+            ASSERT_TRUE(viewer.getParameterManager()
+                            ->ensureLoaded());
+            ASSERT_TRUE(viewer.getWindowManager()->init());
+            viewer.input_controller_ =
+                std::make_unique<InputController>(
+                    nullptr, viewer.getViewport());
+            auto opened = viewer.projectOpen(
+                project_path,
+                ProjectSwitchDisposition::DiscardChanges);
+            ASSERT_TRUE(opened)
+                << lfs::format_for_developer(
+                       opened.error());
+            viewer.noteGuiSessionRestoreOwnerReady(1);
+            ASSERT_TRUE(waitForHydrationComplete(
+                viewer, viewer.work_queue_mutex_,
+                viewer.work_queue_));
+            ASSERT_FALSE(
+                viewer.getTrainerManager()->hasTrainer());
+            const auto session =
+                viewer.projectTrainingSessionState();
+            EXPECT_TRUE(session.available);
+            EXPECT_FALSE(session.hydrated);
+            EXPECT_EQ(session.iteration, 11);
+            EXPECT_EQ(session.max_iterations, scenario.expected_total);
+            EXPECT_FALSE(session.completed);
+            EXPECT_EQ(session.strategy, "mrnf");
 
-        auto* const manager = viewer.getTrainerManager();
-        ASSERT_NE(manager, nullptr);
-        EXPECT_EQ(manager->getCurrentIteration(), 11);
-        EXPECT_EQ(manager->getTotalIterations(), 30000);
-        EXPECT_EQ(manager->getState(), TrainingState::Paused);
-        EXPECT_TRUE(manager->canResume());
-        EXPECT_FALSE(manager->canStart());
-        EXPECT_FALSE(manager->canPause());
-        EXPECT_TRUE(manager->canStop());
-        EXPECT_STREQ(manager->getStrategyType(), "mrnf");
-        EXPECT_EQ(manager->getNumSplats(), 2);
+            auto* const manager = viewer.getTrainerManager();
+            ASSERT_NE(manager, nullptr);
+            EXPECT_EQ(manager->getCurrentIteration(), 11);
+            EXPECT_EQ(manager->getTotalIterations(), scenario.expected_total);
+            EXPECT_EQ(manager->getState(), TrainingState::Paused);
+            EXPECT_TRUE(manager->canResume());
+            EXPECT_FALSE(manager->canStart());
+            EXPECT_FALSE(manager->canPause());
+            EXPECT_TRUE(manager->canStop());
+            EXPECT_STREQ(manager->getStrategyType(), "mrnf");
+            EXPECT_EQ(manager->getNumSplats(), 2);
+        }
     }
 
     TEST_F(VisualizerImplResetTest,

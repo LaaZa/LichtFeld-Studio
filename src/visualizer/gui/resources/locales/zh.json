@@ -1,4 +1,6 @@
 {
+  "training.reset_before_strategy_change": "更改策略前请重置训练。",
+  "io.no_finite_seed_points": "点云中没有坐标为有限值的初始点。将使用随机初始化。",
   "ui.vram_window_1m": "1 分钟",
   "ui.vram_process_nvml_tooltip": "操作系统或 GPU 驱动程序报告的进程 GPU 内存。",
   "ui.vram_process_unavailable_tooltip": "无法获取进程 GPU 内存。设备使用量包括其他应用程序。",
@@ -711,6 +713,12 @@
   },
   "rendering": "渲染",
   "scene": {
+    "summary_model_one": "{} 个模型",
+    "summary_model_few": "{} 个模型",
+    "summary_model_other": "{} 个模型",
+    "summary_node_one": "{} 个节点",
+    "summary_node_few": "{} 个节点",
+    "summary_node_other": "{} 个节点",
     "add_ply": "添加PLY...",
     "add_group": "添加组",
     "add_group_ellipsis": "添加组...",
@@ -949,6 +957,16 @@
     "input": "输入",
     "key_bindings": "按键绑定",
     "camera_navigation": "相机导航",
+    "new_project_navigation_up": "新项目的向上轴",
+    "new_project_navigation_help": "仅适用于新项目。现有项目保留已保存的设置。",
+    "new_project_align_grid": "对齐新项目的网格",
+    "navigation_project_hint": "保存项目以保留此选择。数据坐标保持不变。",
+    "navigation_up_axis": "向上轴",
+    "navigation_up_legacy_y": "Y-up（默认）",
+    "navigation_up_data_z": "+Z 向上（数据坐标）",
+    "navigation_up_help": "保存在项目中。仅改变导航方式，数据坐标和比例保持不变。",
+    "align_navigation_grid": "将网格对齐到向上方向",
+    "align_grid_short": "对齐",
     "navigation_mode": "导航模式",
     "zoom_speed": "缩放速度",
     "zoom_speed_tooltip": "使用鼠标滚轮缩放相机的默认速度。",
@@ -1366,9 +1384,9 @@
         "custom": "最近加载的自定义 HDRI"
       },
       "grid_plane": {
-        "yz": "在 YZ 平面显示网格（右视图）",
-        "xz": "在 XZ 平面显示网格（顶视图）",
-        "xy": "在 XY 平面显示网格（前视图）"
+        "yz": "在 YZ 平面显示网格",
+        "xz": "在 XZ 平面显示网格",
+        "xy": "在 XY 平面显示网格"
       },
       "sh_degree": {
         "0": "仅漫反射 — 无视角相关光照",
@@ -2097,6 +2115,8 @@
     "strategy_default": "默认",
     "split": "分割：",
     "mcp_name": "MCP",
+    "ui_fps_tooltip": "每秒显示的界面帧数。",
+    "view_fps_tooltip": "每秒渲染的3D视图帧数。静止视图可能显示为0，此时界面仍可正常响应。",
     "ui": "界面",
     "view": "视图"
   },
@@ -2430,9 +2450,9 @@
     "solid_color": "纯色",
     "equirectangular_hdri": "等距圆柱 HDRI",
     "off": "关闭",
-    "grid_plane_yz": "YZ（右）",
-    "grid_plane_xz": "XZ（上）",
-    "grid_plane_xy": "XY（前）",
+    "grid_plane_yz": "YZ",
+    "grid_plane_xz": "XZ",
+    "grid_plane_xy": "XY",
     "psnr": "PSNR",
     "psnr_ssim": "PSNR + SSIM",
     "manual": "手动",
@@ -2676,12 +2696,13 @@
     "right_click_to_add": "右键单击以添加...",
     "training_complete": "训练完成",
     "training_stopped": "训练已停止",
+    "training_stopped_body": "用户在第 {} 次迭代时停止了训练。\n\n请保存项目以保留此状态。重新打开已保存的项目即可继续训练。",
     "training_error": "训练错误",
     "param_manager_unavailable": "参数管理器不可用",
     "failed_to_load_params": "加载参数失败：",
-    "err_distorted_images": "检测到畸变图像。请启用 --gut 或 --undistort 以使用有畸变的相机进行训练。",
+    "err_distorted_images": "检测到畸变图像。请在训练面板中启用 GUT 或去畸变，以使用有畸变的相机进行训练。",
     "err_ortho_not_supported": "暂不支持使用正交相机模型进行训练。",
-    "err_non_pinhole": "请启用 --gut 或 --undistort 以使用非针孔相机进行训练。"
+    "err_non_pinhole": "请在训练面板中启用 GUT 或去畸变，以使用非针孔相机进行训练。"
   },
   "projects.gallery.sidebar.title": "图库",
   "projects.gallery.sidebar.refresh": "检查图库",

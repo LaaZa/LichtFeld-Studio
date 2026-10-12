@@ -521,7 +521,15 @@ namespace lfs::gui {
     }
 
     bool VideoExtractorDialog::openVideo(const std::filesystem::path& path) {
+        if (extracting_.load() || pending_params_set_)
+            return false;
+
+        // A finished worker must publish its status before the new source clears it.
+        joinExtractionThread();
         if (!player_->open(path)) {
+            video_path_.clear();
+            output_dir_.clear();
+            controls_dirty_ = true;
             syncHdrControls();
             setExtractionError(std::format("Failed to open {}", lfs::core::path_to_utf8(path)));
             return false;
@@ -1045,8 +1053,8 @@ namespace lfs::gui {
         changed |= setCachedProperty(preview_image_el_, "display", has_preview ? "block" : "none");
 
         if (has_preview) {
-            const std::string src = preview_texture_->rmlSrcUrl(preview_texture_width_,
-                                                                preview_texture_height_);
+            const std::string& src = preview_texture_->rmlSrcUrl(preview_texture_width_,
+                                                                 preview_texture_height_);
             if (!src.empty() && src != preview_src_) {
                 preview_image_el_->SetAttribute("src", src);
                 preview_src_ = src;
@@ -1184,8 +1192,9 @@ namespace lfs::gui {
         }
         changed |= setCachedInnerRml(timeline_markers_el_, markers);
 
-        changed |= setCachedControlValue(trim_start_input_el_, std::format("{:.1f}", start));
-        changed |= setCachedControlValue(trim_end_input_el_, std::format("{:.1f}", end));
+        // These editable values are parsed again on blur and Start; preserve float precision.
+        changed |= setCachedControlValue(trim_start_input_el_, std::format("{}", start));
+        changed |= setCachedControlValue(trim_end_input_el_, std::format("{}", end));
         changed |= setCachedText(estimated_frames_el_, LOCF(VideoExtractor::ESTIMATED_FRAMES, lfs::core::format_count(frame_count)));
 
         if (changed)
@@ -1213,6 +1222,8 @@ namespace lfs::gui {
         changed |= setCachedDisabled(start_btn_el_, !can_start || !naming_valid);
         changed |= setCachedDisabled(stop_btn_el_, !extracting || stop_requested);
         changed |= setCachedDisabled(cancel_btn_el_, false);
+        changed |= setCachedDisabled(browse_video_el_, extracting || pending_params_set_);
+        changed |= setCachedDisabled(browse_output_el_, extracting || pending_params_set_);
 
         changed |= setCachedSelect(naming_select_el_, naming_selection_);
         changed |= setCachedDisabled(naming_select_el_, extracting);
@@ -1456,10 +1467,14 @@ namespace lfs::gui {
         } else if (id == "btn-stop") {
             requestStopExtraction();
         } else if (id == "btn-browse-video") {
+            if (extracting_.load() || pending_params_set_)
+                return;
             const auto path = lfs::vis::gui::OpenVideoFileDialog(video_path_);
             if (!path.empty())
                 (void)openVideo(path);
         } else if (id == "btn-browse-output") {
+            if (extracting_.load() || pending_params_set_)
+                return;
             const auto path = lfs::vis::gui::PickFolderDialog(output_dir_);
             if (!path.empty()) {
                 output_dir_ = path;
@@ -1480,13 +1495,13 @@ namespace lfs::gui {
             markContentDirty();
         } else if (id == "btn-trim-start-set" && player_->isOpen()) {
             trim_start_ = std::clamp(static_cast<float>(player_->currentTime()), 0.0f,
-                                     trim_end_ - MIN_TRIM_SECONDS);
+                                     std::max(0.0f, trim_end_ - MIN_TRIM_SECONDS));
             controls_dirty_ = true;
             markContentDirty();
         } else if (id == "btn-trim-end-set" && player_->isOpen()) {
             trim_end_is_auto_ = false;
             trim_end_ = std::clamp(static_cast<float>(player_->currentTime()),
-                                   trim_start_ + MIN_TRIM_SECONDS,
+                                   std::min(trim_start_ + MIN_TRIM_SECONDS, static_cast<float>(player_->duration())),
                                    static_cast<float>(player_->duration()));
             controls_dirty_ = true;
             markContentDirty();
@@ -1702,10 +1717,10 @@ namespace lfs::gui {
         const float time = t * duration;
 
         if (target == TimelineDragTarget::TrimStart)
-            trim_start_ = std::clamp(time, 0.0f, trim_end_ - MIN_TRIM_SECONDS);
+            trim_start_ = std::clamp(time, 0.0f, std::max(0.0f, trim_end_ - MIN_TRIM_SECONDS));
         else if (target == TimelineDragTarget::TrimEnd) {
             trim_end_is_auto_ = false;
-            trim_end_ = std::clamp(time, trim_start_ + MIN_TRIM_SECONDS, duration);
+            trim_end_ = std::clamp(time, std::min(trim_start_ + MIN_TRIM_SECONDS, duration), duration);
         }
 
         controls_dirty_ = true;
@@ -1715,10 +1730,10 @@ namespace lfs::gui {
     void VideoExtractorDialog::applyTextInput(const std::string& id) {
         if (id == "trim-start-input" && player_->isOpen()) {
             trim_start_ = std::clamp(readFloatValue(trim_start_input_el_, trim_start_), 0.0f,
-                                     trim_end_ - MIN_TRIM_SECONDS);
+                                     std::max(0.0f, trim_end_ - MIN_TRIM_SECONDS));
         } else if (id == "trim-end-input" && player_->isOpen()) {
             trim_end_ = std::clamp(readFloatValue(trim_end_input_el_, trim_end_),
-                                   trim_start_ + MIN_TRIM_SECONDS,
+                                   std::min(trim_start_ + MIN_TRIM_SECONDS, static_cast<float>(player_->duration())),
                                    static_cast<float>(player_->duration()));
         } else if (id == "custom-width-input") {
             custom_width_ = std::max(16, readIntValue(custom_width_input_el_, custom_width_));

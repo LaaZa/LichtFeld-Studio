@@ -1,4 +1,6 @@
 {
+  "training.reset_before_strategy_change": "Reset de training voordat u de strategie wijzigt.",
+  "io.no_finite_seed_points": "De puntenwolk bevat geen beginpunten met eindige coördinaten. Er wordt willekeurige initialisatie gebruikt.",
   "ui.vram_window_1m": "1 min",
   "ui.vram_process_nvml_tooltip": "GPU-geheugen van het proces volgens het besturingssysteem of GPU-stuurprogramma.",
   "ui.vram_process_unavailable_tooltip": "GPU-geheugen van het proces is niet beschikbaar. Het apparaatgebruik omvat andere toepassingen.",
@@ -711,6 +713,12 @@
   },
   "rendering": "Renderen",
   "scene": {
+    "summary_model_one": "{} model",
+    "summary_model_few": "{} modellen",
+    "summary_model_other": "{} modellen",
+    "summary_node_one": "{} knooppunt",
+    "summary_node_few": "{} knooppunten",
+    "summary_node_other": "{} knooppunten",
     "add_ply": "PLY Toevoegen...",
     "add_group": "Groep Toevoegen",
     "add_group_ellipsis": "Groep Toevoegen...",
@@ -949,6 +957,16 @@
     "input": "Invoer",
     "key_bindings": "Toetsbindingen",
     "camera_navigation": "Cameranavigatie",
+    "new_project_navigation_up": "Verticaal voor nieuwe projecten",
+    "new_project_navigation_help": "Geldt alleen voor nieuwe projecten. Bestaande projecten behouden hun opgeslagen instellingen.",
+    "new_project_align_grid": "Raster in nieuwe projecten uitlijnen",
+    "navigation_project_hint": "Sla het project op om deze keuze te bewaren. De gegevenscoördinaten blijven gelijk.",
+    "navigation_up_axis": "Verticale as",
+    "navigation_up_legacy_y": "Y-up (standaard)",
+    "navigation_up_data_z": "+Z omhoog (datacoördinaten)",
+    "navigation_up_help": "Opgeslagen in dit project. Alleen de navigatie verandert; datacoördinaten en schaal blijven gelijk.",
+    "align_navigation_grid": "Raster op verticaal uitlijnen",
+    "align_grid_short": "Uitlijnen",
     "navigation_mode": "Navigatiemodus",
     "zoom_speed": "Zoomsnelheid",
     "zoom_speed_tooltip": "Standaardsnelheid voor het zoomen van de camera met het muiswiel.",
@@ -1366,9 +1384,9 @@
         "custom": "Laatst geladen aangepaste HDRI"
       },
       "grid_plane": {
-        "yz": "Raster op YZ-vlak tonen (rechter aanzicht)",
-        "xz": "Raster op XZ-vlak tonen (bovenaanzicht)",
-        "xy": "Raster op XY-vlak tonen (vooraanzicht)"
+        "yz": "Raster op YZ-vlak tonen",
+        "xz": "Raster op XZ-vlak tonen",
+        "xy": "Raster op XY-vlak tonen"
       },
       "sh_degree": {
         "0": "Alleen diffuus — geen blikrichting-afhankelijke verlichting",
@@ -2097,6 +2115,8 @@
     "strategy_default": "Standaard",
     "split": "Splitsing:",
     "mcp_name": "MCP",
+    "ui_fps_tooltip": "Weergegeven interfaceframes per seconde.",
+    "view_fps_tooltip": "Gerenderde frames van de 3D-weergave per seconde. Een statische weergave kan 0 tonen terwijl de interface blijft reageren.",
     "ui": "UI",
     "view": "Beeld"
   },
@@ -2430,9 +2450,9 @@
     "solid_color": "Effen kleur",
     "equirectangular_hdri": "Equirectangulaire HDRI",
     "off": "Uit",
-    "grid_plane_yz": "YZ (rechts)",
-    "grid_plane_xz": "XZ (boven)",
-    "grid_plane_xy": "XY (voor)",
+    "grid_plane_yz": "YZ",
+    "grid_plane_xz": "XZ",
+    "grid_plane_xy": "XY",
     "psnr": "PSNR",
     "psnr_ssim": "PSNR + SSIM",
     "manual": "Handmatig",
@@ -2676,12 +2696,13 @@
     "right_click_to_add": "Rechtsklik om toe te voegen...",
     "training_complete": "Training Voltooid",
     "training_stopped": "Training Gestopt",
+    "training_stopped_body": "De training is door de gebruiker gestopt bij iteratie {}.\n\nSla het project op om deze toestand te bewaren. Open het opgeslagen project opnieuw om de training te hervatten.",
     "training_error": "Training Fout",
     "param_manager_unavailable": "ParameterManager niet beschikbaar",
     "failed_to_load_params": "Laden van params mislukt:",
-    "err_distorted_images": "Vervormde beelden gedetecteerd. Activeer --gut of --undistort om te trainen met vervormde camera's.",
+    "err_distorted_images": "Vervormde beelden gedetecteerd. Schakel GUT of Vervorming corrigeren in het trainingspaneel in om te trainen met camera’s met vervorming.",
     "err_ortho_not_supported": "Training met orthografisch cameramodel wordt nog niet ondersteund.",
-    "err_non_pinhole": "Activeer --gut of --undistort om te trainen met niet-pinhole camera's."
+    "err_non_pinhole": "Schakel GUT of Vervorming corrigeren in het trainingspaneel in om te trainen met camera’s zonder pinholemodel."
   },
   "projects.gallery.sidebar.title": "Galerij",
   "projects.gallery.sidebar.refresh": "Galerij controleren",
