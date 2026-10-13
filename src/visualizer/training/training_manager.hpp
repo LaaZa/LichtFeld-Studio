@@ -79,6 +79,7 @@ namespace lfs::vis {
         }
         [[nodiscard]] bool isDatasetEditable() const;
         [[nodiscard]] bool canChangeStrategy(std::string_view strategy) const;
+        [[nodiscard]] bool rejectsIterationLimit(std::size_t iterations) const;
 
         // Link to viewer for notifications
         void setViewer(VisualizerImpl* viewer) { viewer_ = viewer; }
@@ -218,6 +219,7 @@ namespace lfs::vis {
             int camera_id,
             bool include_ssim,
             const lfs::training::Trainer::CameraMetricsAppearanceConfig& appearance) const;
+        [[nodiscard]] bool hasInitializedTrainer() const;
 
         // Pending parameters (editable in Ready state, applied on start)
         lfs::core::param::OptimizationParameters& getEditableOptParams() { return pending_opt_params_; }
@@ -360,8 +362,10 @@ namespace lfs::vis {
         bool restored_finish_published_ = false;
         bool stored_session_presentation_active_ = false;
         bool stored_session_presentation_completed_ = false;
+        bool stored_session_presentation_gut_ = false;
         int stored_session_presentation_iteration_ = 0;
         int stored_session_presentation_max_iterations_ = 0;
+        int stored_session_presentation_max_cap_ = 0;
         std::string stored_session_presentation_strategy_;
 
         [[nodiscard]] FinishReason resolvedRestoredFinishReason() const;

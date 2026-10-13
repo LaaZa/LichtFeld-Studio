@@ -3,19 +3,23 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "mesh_loader.hpp"
+#include "core/event_bridge/localization_manager.hpp"
 #include "core/logger.hpp"
 #include "core/mesh_data.hpp"
 #include "core/path_utils.hpp"
 #include "io/error.hpp"
 #include "io/mesh/texture_loader.hpp"
+#include <algorithm>
 #include <array>
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <format>
 #include <limits>
+#include <string_view>
 
 namespace lfs::io {
 
@@ -36,6 +40,22 @@ namespace lfs::io {
             if (ai_mat->Get(AI_MATKEY_BASE_COLOR, color) == AI_SUCCESS ||
                 ai_mat->Get(AI_MATKEY_COLOR_DIFFUSE, color) == AI_SUCCESS) {
                 mat.base_color = {color.r, color.g, color.b, color.a};
+            }
+
+            ai_mat->Get("$mat.gltf.alphaCutoff", 0, 0, mat.alpha_cutoff);
+            if (!std::isfinite(mat.alpha_cutoff)) {
+                mat.alpha_cutoff = 0.5f;
+            }
+            mat.alpha_cutoff = std::clamp(mat.alpha_cutoff, 0.0f, 1.0f);
+
+            aiString alpha_mode;
+            if (ai_mat->Get("$mat.gltf.alphaMode", 0, 0, alpha_mode) == AI_SUCCESS) {
+                const std::string_view mode = alpha_mode.C_Str();
+                if (mode == "MASK") {
+                    mat.alpha_mode = lfs::core::AlphaMode::Mask;
+                } else if (mode == "BLEND") {
+                    mat.alpha_mode = lfs::core::AlphaMode::Blend;
+                }
             }
 
             aiColor3D emissive;
@@ -440,6 +460,8 @@ namespace lfs::io {
         sub_meshes.reserve(scene->mNumMeshes);
         mesh_material_indices.reserve(scene->mNumMeshes);
         const auto append_mesh = [&](const unsigned int i, const aiMatrix4x4& transform) {
+            if (scene->mMeshes[i]->mNumVertices == 0)
+                return;
             sub_meshes.push_back(convert_ai_mesh(scene->mMeshes[i], options.mesh_geometry_only, transform));
             mesh_material_indices.push_back(scene->mMeshes[i]->mMaterialIndex);
             LOG_DEBUG("  mesh[{}]: {} verts, {} faces, material_index={}",
@@ -464,6 +486,31 @@ namespace lfs::io {
                 }
             };
             visit(visit, scene->mRootNode, aiMatrix4x4());
+        }
+
+        if (std::none_of(sub_meshes.begin(), sub_meshes.end(),
+                         [](const MeshData& mesh) { return mesh.face_count() > 0; })) {
+            const auto& localization = lfs::event::LocalizationManager::getInstance();
+            return make_error(ErrorCode::CORRUPTED_DATA,
+                              localization.hasKey("io.mesh_no_triangle_faces")
+                                  ? LOC("io.mesh_no_triangle_faces")
+                                  : "The mesh file contains no triangle faces.",
+                              path);
+        }
+
+        for (auto& mesh : sub_meshes) {
+            auto vertices = mesh.vertices.accessor<float, 2>();
+            for (int64_t i = 0; i < mesh.vertex_count(); ++i) {
+                if (!std::isfinite(vertices(i, 0)) || !std::isfinite(vertices(i, 1)) ||
+                    !std::isfinite(vertices(i, 2))) {
+                    const auto& localization = lfs::event::LocalizationManager::getInstance();
+                    return make_error(ErrorCode::CORRUPTED_DATA,
+                                      localization.hasKey("io.mesh_nonfinite_vertices")
+                                          ? LOC("io.mesh_nonfinite_vertices")
+                                          : "Mesh contains non-finite vertex coordinates.",
+                                      path);
+                }
+            }
         }
 
         if (options.progress) {

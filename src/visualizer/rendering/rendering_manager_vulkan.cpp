@@ -1016,7 +1016,14 @@ namespace lfs::vis {
             const auto vp_data = frame_ctx.makeViewportData();
             frame.view_projection = vp_data.getProjectionMatrix() * vp_data.getViewMatrix();
             frame.camera_position = vp_data.translation;
-            frame.items = buildViewportMeshDrawItems(frame_ctx.scene_state, settings, vp_data.translation);
+            if (!frame_ctx.scene_state.meshes.empty()) {
+                frame.depth_view = settings.depth_view;
+                frame.depth_view_min = settings.depth_view_min;
+                frame.depth_view_max = settings.depth_view_max;
+                frame.depth_grayscale = settings.depth_visualization_mode == lfs::rendering::DepthVisualizationMode::Grayscale;
+                frame.camera_backward = vp_data.rotation[2];
+                frame.items = buildViewportMeshDrawItems(frame_ctx.scene_state, settings, frame.camera_backward);
+            }
 
             const auto frame_view = frame_ctx.makeFrameView();
             frame.environment = makeEnvironmentParams(frame_view, settings, environment_map_path);
@@ -2317,6 +2324,7 @@ namespace lfs::vis {
                         vksplat_viewport_renderer_->reset();
                         // Clear GT async ticket host state after ring teardown.
                         gt_async_depth_ticket_ = 0;
+                        gt_async_refresh_pending_ = false;
                         gt_async_depth_dest_ = {};
                         gt_async_ticket_mode_ = GTComparisonMode::RGB;
                         gt_async_ticket_intrinsics_.reset();
@@ -2496,7 +2504,11 @@ namespace lfs::vis {
         // Camera thumbnails are uploaded and composited by the GUI viewport
         // pass. Reuse the cached splat image for an overlay-only refresh; a
         // thumbnail must never turn a stream-in update into a full splat pass.
-        if (!vksplat_viewport_resize &&
+        const bool gt_readback_pending =
+            gt_async_depth_ticket_ != 0 &&
+            splitViewUsesGTComparison(frame_settings.split_view_mode) &&
+            frame_settings.gt_comparison_mode != GTComparisonMode::RGB;
+        if (!vksplat_viewport_resize && !gt_readback_pending &&
             (frame_dirty == 0 || frame_dirty == DirtyFlag::OVERLAY) &&
             has_cached_viewport_output) {
             LOG_PERF("renderVulkanFrame: cache HIT (returning cached image)");
@@ -2636,7 +2648,8 @@ namespace lfs::vis {
                             .start_position = layout.start_position,
                             .end_position = layout.end_position,
                             .view_projection = panel_view.getProjectionMatrix() * panel_view.getViewMatrix(),
-                            .camera_position = panel_view.translation});
+                            .camera_position = panel_view.translation,
+                            .camera_backward = panel_view.rotation[2]});
                     };
                 append_panel(context.viewport, 0);
                 append_panel(split_view_service_.secondaryViewport(), 1);
@@ -2780,6 +2793,26 @@ namespace lfs::vis {
             }
 
             if (!panel_has_visible_gaussian_model) {
+                if (splitViewUsesIndependentPanels(frame_settings.split_view_mode) &&
+                    !frame_ctx.scene_state.meshes.empty()) {
+                    const glm::vec4 color{
+                        frame_settings.background_color,
+                        environmentBackgroundUsesTransparentViewerCompositing(frame_settings) ? 0.0f : 1.0f};
+                    if (!mesh_only_split_background_ ||
+                        glm::any(glm::notEqual(mesh_only_split_background_color_, color))) {
+                        auto image = lfs::core::Tensor::from_vector(
+                            {color.r, color.g, color.b, color.a}, {4, 1, 1}, lfs::core::Device::CPU);
+                        mesh_only_split_background_ =
+                            std::make_shared<lfs::core::Tensor>(std::move(image));
+                        mesh_only_split_background_color_ = color;
+                    }
+                    lfs::rendering::FrameMetadata metadata{};
+                    metadata.valid = true;
+                    return RenderedPanel{.image = mesh_only_split_background_,
+                                         .metadata = std::move(metadata),
+                                         .size = {1, 1},
+                                         .alloc_size = {1, 1}};
+                }
                 return std::unexpected("No renderable model for split-view panel");
             }
 
@@ -3257,6 +3290,11 @@ namespace lfs::vis {
                             std::string compare_error;
 
                             if (gt_mode != GTComparisonMode::RGB) {
+                                // Overlay-only follow-ups deliver the pending image without
+                                // starting another readback. Preserve real changes that arrive
+                                // while the previous camera's ticket is still in flight.
+                                gt_async_refresh_pending_ |=
+                                    (frame_dirty & ~(DirtyFlag::OVERLAY | DirtyFlag::SPLIT_POSITION)) != 0;
                                 // #1574 hold-then-swap: never host-wait the GT depth ticket on the
                                 // render thread. Poll any outstanding ticket; swap into the held
                                 // display when Ready; submit at most one new ticket when free. The
@@ -3384,7 +3422,8 @@ namespace lfs::vis {
                                         }
                                     }
 
-                                    if (compare_error.empty() && gt_async_depth_ticket_ == 0) {
+                                    if (compare_error.empty() && gt_async_depth_ticket_ == 0 &&
+                                        gt_async_refresh_pending_) {
                                         request.depth_view = false;
                                         vksplat_viewport_renderer_->setDepthCaptureMode(true, true);
                                         struct DepthCaptureModeGuard {
@@ -3427,6 +3466,7 @@ namespace lfs::vis {
                                                     gt_async_depth_dest_ = {};
                                                 } else {
                                                     gt_async_depth_ticket_ = *ticket;
+                                                    gt_async_refresh_pending_ = false;
                                                     gt_async_ticket_mode_ = gt_mode;
                                                     gt_async_ticket_intrinsics_ =
                                                         request.frame_view.intrinsics_override;
@@ -3435,6 +3475,11 @@ namespace lfs::vis {
                                                 }
                                             }
                                         }
+                                    }
+
+                                    if (gt_async_depth_ticket_ != 0) {
+                                        markDirty(DirtyFlag::OVERLAY, FrameReason::AsyncCompletion,
+                                                  "gt_depth_readback");
                                     }
 
                                     if (gt_async_held_display_ && gt_async_held_display_->is_valid()) {
@@ -3463,6 +3508,7 @@ namespace lfs::vis {
                                     gt_async_depth_dest_ = {};
                                 }
                                 gt_async_held_display_.reset();
+                                gt_async_refresh_pending_ = false;
                                 const bool use_point_cloud_compare =
                                     frame_settings.point_cloud_mode || !has_visible_gaussian_model;
                                 if (use_point_cloud_compare && has_visible_gaussian_model) {
@@ -3593,7 +3639,7 @@ namespace lfs::vis {
                                 }
 
                                 const SplitCompositeContentRect rect =
-                                    resolveSplitCompositeContentRect(render_size, true, gt_size);
+                                    resolveSplitCompositeContentRect(gt_comparison_size, true, gt_size);
                                 pending_split_view.enabled = true;
                                 pending_split_view.split_position = frame_settings.split_position;
                                 pending_split_view.background = frame_settings.background_color;
@@ -3808,7 +3854,10 @@ namespace lfs::vis {
                 spatial_runtime_ready && !rendered_image_contains_ground_truth;
             pending_split_view.left.spatial_filter = filter_reconstructed_panels;
             pending_split_view.right.spatial_filter = filter_reconstructed_panels;
-            pending_split_view.coordinate_extent = render_size;
+            // Keep reference sampling stable: rounding the letterbox at the
+            // reduced scene resolution changes its size after presentation scaling.
+            pending_split_view.coordinate_extent =
+                rendered_image_contains_ground_truth ? gt_comparison_size : render_size;
             if (environmentBackgroundUsesTransparentViewerCompositing(frame_settings)) {
                 const bool independent = splitViewUsesIndependentPanels(frame_settings.split_view_mode);
                 const auto panel_environment = [&](const Viewport& viewport, const VulkanSplitViewPanel& panel) {
@@ -3976,6 +4025,7 @@ namespace lfs::vis {
                 vk_req.background_color = pc_request.frame_view.background_color;
                 vk_req.transparent_background = pc_request.transparent_background;
                 vk_req.orthographic = pc_request.frame_view.orthographic;
+                vk_req.equirectangular = pc_request.render.equirectangular;
                 vk_req.ortho_scale = pc_request.frame_view.ortho_scale;
                 vk_req.focal_y = focal_y;
                 vk_req.voxel_size = pc_request.render.voxel_size;
@@ -4768,7 +4818,7 @@ namespace lfs::vis {
                         if (!capture_params.left.image || !capture_params.right.image) {
                             return {};
                         }
-                        // content_rect is authored in coordinate_extent (render_size)
+                        // content_rect is authored in coordinate_extent
                         // space; the capture tensor is current_size. Match
                         // recordScenePass: per-edge rounding into output pixels.
                         // Capture has no on-screen viewport offset.

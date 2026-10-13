@@ -45,6 +45,8 @@ namespace lfs::vis::gui {
             std::string psnr_text;
             bool show_ssim = false;
             std::string ssim_text;
+            lfs::vis::AppStore::CameraMetricsStatus metrics_status =
+                lfs::vis::AppStore::CameraMetricsStatus::Available;
         };
 
         struct SplitDividerOverlayState {
@@ -135,6 +137,7 @@ namespace lfs::vis::gui {
         bool syncBuiltinDocument(bool force);
         bool updateToolbarRoots();
         bool updateToolbarRailLayout();
+        bool updateViewportOverlayPanelLayout();
         bool applyToolbarPosition();
         void attachToolbarDragListeners();
         void resetToolbarDragListeners();

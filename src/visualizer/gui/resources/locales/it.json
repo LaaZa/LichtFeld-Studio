@@ -1,6 +1,15 @@
 {
+  "io.mask_decode_failed": "Impossibile decodificare la maschera",
+  "io.dataset_image_unreadable_one": "Impossibile leggere l’immagine '{}' del set di dati. La sua fotocamera resta nella scena, ma il suo utilizzo può interrompere l’addestramento.",
+  "io.dataset_image_unreadable_many": "Impossibile leggere {} immagini del set di dati (esempi: {}). Le loro fotocamere restano nella scena, ma il loro utilizzo può interrompere l’addestramento.",
+  "training.unreadable_image": "Impossibile leggere un’immagine di addestramento. Apri Dettagli per vedere il file e l’errore del decodificatore.",
   "training.reset_before_strategy_change": "Reimposta l’addestramento prima di cambiare strategia.",
+  "io.mesh_no_triangle_faces": "Il file della mesh non contiene facce triangolari.",
   "io.no_finite_seed_points": "La nuvola di punti non contiene punti iniziali finiti. Verrà utilizzata un’inizializzazione casuale.",
+  "io.dataset_camera_invalid_focal": "Ignorate {} fotocamere del dataset con lunghezza focale nulla, negativa o non finita (esempi: {}).",
+  "io.dataset_camera_no_valid_focal": "Nessuna fotocamera del dataset ha una lunghezza focale valida. Controlla la calibrazione e ricarica il dataset.",
+  "io.mesh_nonfinite_vertices": "La mesh contiene coordinate dei vertici non finite.",
+  "io.colmap_skipped_invalid_pose": "L’importazione COLMAP ha ignorato immagini con posa non valida (numero: {}; esempi: {} [{}])",
   "ui.vram_window_1m": "1 min",
   "ui.vram_process_nvml_tooltip": "Memoria GPU del processo riportata dal sistema operativo o dal driver GPU.",
   "ui.vram_process_unavailable_tooltip": "Memoria GPU del processo non disponibile. L’utilizzo del dispositivo include altre applicazioni.",
@@ -1012,6 +1021,11 @@
     "reset_section_success": "Sezione reimpostata immediatamente.",
     "reset_section_failed": "Impossibile reimpostare le impostazioni.",
     "ui_preferences_save_failed": "Impossibile salvare le preferenze dell'interfaccia.",
+    "ui_preferences_backup_title": "Backup delle impostazioni dell’interfaccia creato",
+    "ui_preferences_backup_message": "Le impostazioni dell’interfaccia danneggiate sono state salvate accanto a ui_preferences.json prima della sostituzione.",
+    "legacy_layout_backup_message": "È stata salvata una copia del vecchio layout danneggiato accanto a layout.json. Le altre preferenze dell’interfaccia sono state caricate.",
+    "legacy_settings_conflict_title": "Le vecchie impostazioni sono separate",
+    "legacy_settings_conflict_message": "Sono state trovate impostazioni scritte da una versione precedente dopo la migrazione. Le impostazioni attuali sono state conservate; le modifiche nella vecchia versione non verranno sincronizzate automaticamente.",
     "reset_all_settings": "Reimposta tutte le impostazioni",
     "reset_all_settings_confirmation": "Ripristinare lingua, tema, scala dell'interfaccia, ricostruzione della scena, preferenze di input, server MCP, layout e stato della finestra ai valori predefiniti? L'azione viene applicata subito. Se è aperto un progetto .licht, il layout salvato verrà sostituito al prossimo salvataggio; contenuti del progetto, dataset, esportazioni, plugin e cache non vengono modificati.",
     "reset_all_settings_success": "Tutte le preferenze, il layout e lo stato della finestra sono stati reimpostati immediatamente.",
@@ -1489,10 +1503,15 @@
     "file": "file",
     "items": "elementi",
     "and_more": "... e",
+    "and_more_in_log": "... e altri {} (elenco completo nel registro)",
     "cannot_open": "Impossibile aprire"
   },
   "file_drop": {
-    "blocked_during_training": "Arresta l'addestramento prima di caricare una nuova scena."
+    "drop_video_project_separately": "Trascina video e progetti separatamente. Gli elementi elencati non sono stati aperti.",
+    "supported_formats_detail": "Formati supportati: .licht, .ply, .sog, .ssog, lod-meta.json, .spz, .rad, .usd, .usda, .usdc, .usdz, .obj, .fbx, .gltf, .glb, .stl, .dae, .hdr, .exr, .json, .resume, {} o directory dei set di dati",
+    "blocked_during_training": "Arresta l'addestramento prima di caricare una nuova scena.",
+    "cancelled_by_new_project": "L’azione Nuovo progetto ha annullato il rilascio del file. Rilascia di nuovo il file per caricarlo.",
+    "cancelled_by_project_switch": "Il file rilasciato non è stato caricato perché è iniziata un’operazione sul progetto. Rilascialo di nuovo per caricarlo."
   },
   "export_dialog": {
     "folder_name": "Nome della cartella",
@@ -1544,12 +1563,23 @@
     "status_label": "Stato: %s"
   },
   "input_settings": {
+    "mouse_back": "Pulsante Indietro del mouse",
+    "mouse_forward": "Pulsante Avanti del mouse",
+    "invalid_profile_name": "Nome del profilo non valido. Usa un nome semplice senza separatori di percorso o caratteri riservati.",
+    "profile_save_failed": "Impossibile salvare il profilo di input.",
+    "invalid_binding": "Questa scorciatoia non può essere usata per questa azione.",
+    "damaged_profile_backed_up": "Una mappa tasti danneggiata è stata salvata prima della scrittura. Il file originale si trova accanto al profilo.",
+    "invalid_entries_skipped": "Voci della mappa dei tasti ignorate e conservate nelle posizioni da 1: ",
+    "newer_profile_unchanged": "Questa mappa dei tasti è stata salvata da una versione più recente. Non è stata caricata né modificata.",
+    "core_actions_unreachable": "Alcune scorciatoie essenziali di questa mappa non sono utilizzabili. Puoi ripristinare solo queste azioni.",
+    "restore_core_actions": "Ripristina i valori predefiniti per queste azioni",
     "active_profile": "Profilo Attivo",
     "save_current_profile": "Salva Profilo Corrente",
     "reset_to_default": "Ripristina Predefinito",
     "export": "Esporta...",
     "import": "Importa...",
     "rebind": "Riassocia",
+    "clear_binding": "Cancella",
     "cancel": "Annulla",
     "replace": "Sostituisci",
     "conflict_title": "Sostituire associazione?",
@@ -1569,6 +1599,7 @@
     "click_again_double": "Clicca di nuovo per doppio clic...",
     "tool_mode": "Modalità Strumento",
     "select_tool_mode": "Seleziona modalità strumento per visualizzare/modificare le associazioni",
+    "altgr_capture_unsupported": "Le scorciatoie AltGr non possono essere acquisite. Usa una scorciatoia senza AltGr.",
     "global_bindings_hint": "Le associazioni globali si applicano ovunque a meno che non vengano sovrascritte",
     "tool_bindings_hint": "Le associazioni specifiche degli strumenti sovrascrivono le associazioni globali",
     "section.navigation": "NAVIGAZIONE",
@@ -1835,6 +1866,9 @@
     "supported_by": "Supportato da",
     "click_to_continue": "Clicca ovunque per continuare",
     "loaded_plugins": "Plugin di avvio caricati {}/{}",
+    "plugin_invalid_manifest": "Il plugin di avvio {} non è disponibile: manifesto non valido",
+    "plugin_incompatible_api": "Impossibile caricare il plugin di avvio {}: versione API non compatibile",
+    "plugin_load_failed": "Impossibile caricare il plugin di avvio {}",
     "drop_files_title": "Trascina i file qui per iniziare",
     "drop_files_subtitle": "PLY, SOG, SSOG, SPZ, GLB, RAD, USD, dataset COLMAP o file di progetto",
     "drop_files_hint": "Oppure usa {path}",
@@ -2164,6 +2198,12 @@
       "updated": "Aggiornato {name}"
     },
     "title_line": "Sfoglia i plugin installabili dal registro dei plugin.",
+    "success_with_warning": "{success} {warning}",
+    "warning.unverified_source": "Avviso: questa fonte del plugin non include un digest SHA-256; l'archivio non è verificato.",
+    "error.checksum_mismatch": "Verifica SHA-256 dell'archivio del plugin non riuscita.",
+    "error.digest_conflict": "Il digest dell'URL e l'argomento sha256 non corrispondono.",
+    "error.invalid_digest": "Il digest SHA-256 deve contenere esattamente 64 caratteri esadecimali.",
+    "error.digest_requires_archive": "La verifica SHA-256 richiede il metodo di installazione tramite archivio.",
     "warning_body": "AVVISO: LFS non approva direttamente né si assume responsabilità. Utilizzo a proprio rischio.",
     "filter_label": "Filtro",
     "sort_label": "Ordina per",
@@ -2539,6 +2579,8 @@
     "perf_enable_tracking": "Abilita",
     "perf_expand": "Espandi",
     "perf_collapse": "Comprimi",
+    "gt_metrics_training_required": "Le metriche della camera richiedono una sessione di addestramento inizializzata.",
+    "gt_metrics_calculation_failed": "Impossibile calcolare le metriche di questa vista.",
     "perf_hud_tooltip": "Mostra o nascondi l'HUD delle prestazioni"
   },
   "runtime": {
@@ -2603,6 +2645,9 @@
     "export_cancelled": "Esportazione annullata dall’utente",
     "no_splat_data": "Nessun dato splat da esportare",
     "export_streamed_lod": "Impossibile esportare \"{}\": il modello è troppo grande per la memoria e viene letto in streaming dal disco.",
+    "export_extension_required": "Il nome del file esportato deve terminare con {}.",
+    "export_extension_warning": "I dati {} esportati non hanno l'estensione abituale. Altre applicazioni potrebbero non riconoscerli.",
+    "export_sh_degree_clamped": "Il grado SH richiesto è stato limitato a {} per i modelli selezionati.",
     "video_encoder_unavailable": "Encoder video non disponibile",
     "scene_manager_unavailable": "Il gestore della scena non è disponibile",
     "no_model_selected": "Nessun modello selezionato per l’esportazione",
@@ -2666,6 +2711,7 @@
     "edge_off_help": "Bordo da 1 a 2 lungo X: NO. Livella il piano senza la rotazione aggiuntiva."
   },
   "toast": {
+    "camera_training_next_run": "Le modifiche alle camere si applicheranno al prossimo addestramento. Quello in corso continuerà a usare le immagini attuali.",
     "trainer_not_restored": {
       "title": "Trainer non ripristinato",
       "message": "Il modello del progetto è disponibile per la visualizzazione, ma non è stato possibile riprendere l'addestramento. Controlla il percorso del dataset e i log."
@@ -3126,5 +3172,8 @@
   "runtime.import_batch_failed.other": "{} file non sono stati caricati",
   "runtime.import_out_of_memory": "Memoria GPU insufficiente",
   "runtime.import_batch_kept": "Gli altri file sono stati caricati e rimangono disponibili nella scena.",
-  "runtime.import_render_failed": "Impossibile preparare questo file per la visualizzazione"
+  "runtime.import_render_failed": "Impossibile preparare questo file per la visualizzazione",
+  "training.iterations_must_exceed_current": "Il numero massimo di iterazioni deve superare il passo di addestramento corrente.",
+  "runtime.camera_fov_out_of_range": "fov_degrees deve essere finito, maggiore di 0 e minore di 180 gradi",
+  "runtime.camera_fov_clamped": "Il fov_degrees richiesto è stato limitato a {:.2f} gradi"
 }

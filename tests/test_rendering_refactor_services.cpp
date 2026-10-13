@@ -15,8 +15,13 @@
 #include "core/tensor.hpp"
 #include "gui/volume_guide_visibility.hpp"
 #include "io/cache_image_loader.hpp"
+#include "io/loader.hpp"
 #include "operation/undo_history.hpp"
+#include "project/session_state.hpp"
 #include "rendering/coordinate_conventions.hpp"
+#include "rendering/vulkan_external_tensor.hpp"
+#include "training/training_manager.hpp"
+#include "visualizer/app_store.hpp"
 #include "visualizer/gui_capabilities.hpp"
 #include "visualizer/rendering/gt_comparison_cache_utils.hpp"
 #include "visualizer/rendering/render_pass.hpp"
@@ -29,12 +34,15 @@
 #include "visualizer/rendering/viewport_request_builder.hpp"
 #include "visualizer/scene/scene_manager.hpp"
 #include "visualizer/scene_coordinate_utils.hpp"
+#include "window/vulkan_context.hpp"
+#include "window/window_manager.hpp"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <cuda_runtime.h>
 #include <filesystem>
@@ -48,6 +56,36 @@
 #include <vector>
 
 namespace lfs::vis {
+
+    TEST(CameraMetricsStatusTest, DistinguishesUninitializedSessionFromMetricFailure) {
+        const auto needs_session = AppStore::CameraMetrics::unavailable(17, 7000, false);
+        EXPECT_EQ(needs_session.camera_id, 17);
+        EXPECT_EQ(needs_session.iteration, 7000);
+        EXPECT_EQ(needs_session.status, AppStore::CameraMetricsStatus::NeedsInitializedTrainingSession);
+        EXPECT_FALSE(needs_session.ssim.has_value());
+
+        const auto calculation_failed = AppStore::CameraMetrics::unavailable(17, 7000, true);
+        EXPECT_EQ(calculation_failed.status, AppStore::CameraMetricsStatus::CalculationFailed);
+    }
+
+    TEST(CameraMetricsStatusTest, SuccessfulMetricStateRemainsAvailable) {
+        AppStore::CameraMetrics metrics;
+        metrics.camera_id = 17;
+        metrics.iteration = 7000;
+        metrics.psnr = 28.5f;
+        metrics.ssim = 0.91f;
+        EXPECT_EQ(metrics.status, AppStore::CameraMetricsStatus::Available);
+        EXPECT_FLOAT_EQ(metrics.psnr, 28.5f);
+        ASSERT_TRUE(metrics.ssim.has_value());
+        EXPECT_FLOAT_EQ(*metrics.ssim, 0.91f);
+    }
+
+    TEST(CameraMetricsStatusTest, OverlayConfigTracksUnavailableStatus) {
+        AppStore::GTMetricsOverlayConfig config;
+        EXPECT_EQ(config.metrics_status, AppStore::CameraMetricsStatus::Available);
+        config.metrics_status = AppStore::CameraMetricsStatus::NeedsInitializedTrainingSession;
+        EXPECT_NE(config, AppStore::GTMetricsOverlayConfig{});
+    }
 
     TEST(EnvironmentCompositingTest, EnvironmentIdentityCopyCannotAllocate) {
         // Copying pane metadata into the frame and lazy capture must not need
@@ -289,7 +327,8 @@ namespace lfs::vis {
                     {.resize_factor = p.resize_factor,
                      .max_width = p.max_width,
                      .cuda_stream = p.stream,
-                     .output_uint8 = p.output_uint8});
+                     .output_uint8 = p.output_uint8,
+                     .mask_grayscale = p.mask_grayscale});
             });
             initialized = true;
         }
@@ -330,6 +369,168 @@ namespace lfs::vis {
             scene.addCamera("source", group, std::move(camera));
         }
     } // namespace
+
+    class GTComparisonAsyncTest : public RenderingManagerEventsTest {
+    protected:
+        void SetUp() override {
+            RenderingManagerEventsTest::SetUp();
+            int devices = 0;
+            if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0 || !std::getenv("DISPLAY"))
+                GTEST_SKIP() << "Requires CUDA and a Vulkan display";
+            window = std::make_unique<WindowManager>("GT comparison test", 128, 128);
+            ASSERT_TRUE(window->init());
+            scene = std::make_unique<SceneManager>();
+            auto model = makeTestSplat(0.0f);
+            const auto allocator = [this](lfs::core::TensorShape shape, size_t capacity,
+                                          lfs::core::DataType dtype, std::string_view name) {
+                auto tensor = makeVulkanExternalTensor(*window->getVulkanContext(), std::move(shape),
+                                                       dtype, capacity, std::string(name).c_str());
+                if (!tensor)
+                    throw std::runtime_error(tensor.error());
+                return std::move(*tensor);
+            };
+            const auto migrated = lfs::io::migrateSplatTensorsToAllocator(*model, allocator);
+            ASSERT_TRUE(migrated) << migrated.error().format();
+            scene->getScene().addSplat("Model", std::move(model));
+            addDatasetCameraWithImage(*scene);
+            scene->changeContentType(SceneManager::ContentType::SplatFiles);
+            services().set(scene.get());
+            manager = std::make_unique<RenderingManager>();
+            settings = manager->getSettings();
+            settings.split_view_mode = SplitViewMode::GTComparison;
+            settings.gt_comparison_mode = GTComparisonMode::Normal;
+            settings.show_camera_frustums = false;
+            manager->updateSettings(settings);
+            viewport.frameBufferSize = {128, 128};
+        }
+
+        void TearDown() override {
+            manager.reset();
+            scene.reset();
+            window.reset();
+            RenderingManagerEventsTest::TearDown();
+        }
+
+        void render() {
+            (void)manager->frameDemandLedger().plan(FrameClock::now());
+            last = manager->renderVulkanFrame({.viewport = viewport,
+                                               .settings = settings,
+                                               .scene_manager = scene.get(),
+                                               .vulkan_context = window->getVulkanContext()});
+        }
+
+        void settle() {
+            const auto deadline = FrameClock::now() + std::chrono::seconds(5);
+            while (manager->pollDirtyState() && FrameClock::now() < deadline) {
+                render();
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            EXPECT_FALSE(manager->pollDirtyState()) << "GT readback must return to idle";
+        }
+
+        void refreshReference() {
+            // Manual redraws are the workaround, and provide an independent
+            // settled reference for the image expected without further input.
+            for (int i = 0; i < 3; ++i) {
+                manager->markDirty(DirtyFlag::SPLIT_VIEW, FrameReason::SettingsChange);
+                render();
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            settle();
+        }
+
+        std::unique_ptr<WindowManager> window;
+        std::unique_ptr<SceneManager> scene;
+        std::unique_ptr<RenderingManager> manager;
+        Viewport viewport{128, 128};
+        RenderSettings settings;
+        RenderingManager::VulkanFrameResult last;
+    };
+
+    TEST_F(GTComparisonAsyncTest, DepthModeCompletesWithoutFurtherInput) {
+        refreshReference();
+        ASSERT_TRUE(manager->getVulkanMeshFrame().split_view.right.image);
+        const auto normal = manager->getVulkanMeshFrame().split_view.right.image->cpu().clone();
+        settings.gt_comparison_mode = GTComparisonMode::Depth;
+        manager->updateSettings(settings);
+        render();
+        EXPECT_TRUE(manager->pollDirtyState()) << "Pending depth readback needs a follow-up frame";
+        settle();
+        ASSERT_TRUE(manager->getVulkanMeshFrame().split_view.right.image);
+        const auto automatic = manager->getVulkanMeshFrame().split_view.right.image->cpu().clone();
+        refreshReference();
+        ASSERT_TRUE(manager->getVulkanMeshFrame().split_view.right.image);
+        const auto expected = manager->getVulkanMeshFrame().split_view.right.image->cpu();
+        ASSERT_EQ(automatic.bytes(), expected.bytes());
+        EXPECT_EQ(std::memcmp(automatic.data_ptr(), expected.data_ptr(), expected.bytes()), 0)
+            << "Idle depth image differs from the same mode after manual redraw";
+        EXPECT_NE(std::memcmp(normal.data_ptr(), expected.data_ptr(), expected.bytes()), 0);
+    }
+
+    TEST_F(GTComparisonAsyncTest, NormalResizeCompletesWithoutFurtherInput) {
+        refreshReference();
+        viewport.frameBufferSize = {192, 192};
+        viewport.windowSize = {192, 192};
+        manager->markDirty(DirtyFlag::VIEWPORT, FrameReason::SettingsChange);
+        render();
+        settle();
+        ASSERT_TRUE(manager->getVulkanMeshFrame().split_view.right.image);
+        const auto automatic = manager->getVulkanMeshFrame().split_view.right.image->cpu().clone();
+        refreshReference();
+        ASSERT_TRUE(manager->getVulkanMeshFrame().split_view.right.image);
+        const auto expected = manager->getVulkanMeshFrame().split_view.right.image->cpu();
+        ASSERT_EQ(automatic.bytes(), expected.bytes());
+        EXPECT_EQ(std::memcmp(automatic.data_ptr(), expected.data_ptr(), expected.bytes()), 0);
+    }
+
+    TEST_F(GTComparisonAsyncTest, RgbAndOverlayRefreshKeepSettledPixelsAndIdle) {
+        for (const auto mode : {GTComparisonMode::RGB, GTComparisonMode::Normal, GTComparisonMode::Depth}) {
+            settings.gt_comparison_mode = mode;
+            manager->updateSettings(settings);
+            refreshReference();
+            const auto generation = last.image_generation;
+            const auto right = manager->getVulkanMeshFrame().split_view.right;
+            manager->markDirty(DirtyFlag::OVERLAY, FrameReason::Overlay);
+            render();
+            EXPECT_FALSE(manager->pollDirtyState());
+            EXPECT_EQ(last.image_generation, generation);
+            const auto after = manager->getVulkanMeshFrame().split_view.right;
+            EXPECT_EQ(after.image, right.image);
+            EXPECT_EQ(after.external_image_generation, right.external_image_generation);
+        }
+    }
+
+    TEST_F(GTComparisonAsyncTest, UninitializedTrainingSessionPublishesUnavailableCameraMetrics) {
+        struct TrainerServiceGuard {
+            TrainerManager manager;
+            TrainerServiceGuard() { services().set(&manager); }
+            ~TrainerServiceGuard() {
+                app_store().camera_metrics.set(std::nullopt);
+                services().set(static_cast<TrainerManager*>(nullptr));
+                EXPECT_TRUE(manager.clearTrainer());
+            }
+        } trainer_service;
+
+        trainer_service.manager.setTrainer(std::make_unique<lfs::training::Trainer>(scene->getScene()));
+        ASSERT_NE(trainer_service.manager.getTrainer(), nullptr);
+        EXPECT_FALSE(trainer_service.manager.getTrainer()->isInitialized());
+
+        constexpr int camera_id = 17;
+        manager->setCurrentCameraId(camera_id);
+        settings.camera_metrics_mode = RenderSettings::CameraMetricsMode::PSNRSSIM;
+        manager->updateSettings(settings);
+
+        render();
+
+        ASSERT_TRUE(last.rendered || last.image || last.external_image != VK_NULL_HANDLE);
+        const auto published = app_store().camera_metrics.get();
+        ASSERT_TRUE(published.has_value());
+        EXPECT_EQ(published->camera_id, camera_id);
+        EXPECT_EQ(published->iteration, trainer_service.manager.getCurrentIteration());
+        EXPECT_EQ(published->status, AppStore::CameraMetricsStatus::NeedsInitializedTrainingSession);
+        EXPECT_EQ(published->psnr, 0.0f);
+        EXPECT_FALSE(published->ssim.has_value());
+    }
 
     class SceneManagerRenderStateTest : public ::testing::Test {
     protected:
@@ -702,6 +903,165 @@ namespace lfs::vis {
                                      (2.0f * distance_to_pivot *
                                       std::tan(glm::radians(lfs::rendering::focalLengthToVFov(50.0f)) * 0.5f));
         EXPECT_NEAR(ortho_settings.ortho_scale, expected_scale, 1e-4f);
+    }
+
+    TEST_F(RenderingManagerEventsTest, OrthographicSelectionLeavesPanorama) {
+        using Backend = lfs::rendering::GaussianRasterBackend;
+        for (const auto backend : {Backend::ThreeDgs, Backend::ThreeDgut}) {
+            for (const float height : {0.0f, 900.0f}) {
+                RenderingManager manager;
+                auto settings = manager.getSettings();
+                settings.raster_backend = backend;
+                settings.gut = lfs::rendering::isGutBackend(backend);
+                manager.updateSettings(settings);
+                auto event = lfs::core::events::ui::RenderSettingsChanged{};
+                event.equirectangular = true;
+                event.emit();
+
+                const auto generation = app_store().render_settings_generation.get();
+                manager.setOrthographic(true, height, 7.5f);
+                const auto selected = manager.getSettings();
+                EXPECT_GT(app_store().render_settings_generation.get(), generation);
+                EXPECT_TRUE(selected.orthographic);
+                EXPECT_FALSE(selected.equirectangular);
+                EXPECT_EQ(selected.raster_backend, backend);
+                EXPECT_EQ(selected.gut, lfs::rendering::isGutBackend(backend));
+                EXPECT_FALSE(selected.raster_backend_before_equirectangular.has_value());
+                EXPECT_FLOAT_EQ(selected.focal_length_mm, settings.focal_length_mm);
+            }
+        }
+    }
+
+    TEST_F(RenderingManagerEventsTest, PanoramaEventLeavesOrthographic) {
+        RenderingManager manager;
+        manager.setOrthographic(true, 900.0f, 7.5f);
+        const float scale = manager.getSettings().ortho_scale;
+        const auto generation = app_store().render_settings_generation.get();
+        auto event = lfs::core::events::ui::RenderSettingsChanged{};
+        event.equirectangular = true;
+        event.emit();
+        EXPECT_GT(app_store().render_settings_generation.get(), generation);
+        EXPECT_TRUE(manager.getSettings().equirectangular);
+        EXPECT_FALSE(manager.getSettings().orthographic);
+        EXPECT_FLOAT_EQ(manager.getSettings().ortho_scale, scale);
+    }
+
+    TEST_F(RenderingManagerEventsTest, UserProjectionChangesSelectRequestedProjection) {
+        RenderingManager manager;
+        manager.setOrthographic(true, 900.0f, 7.5f);
+        auto settings = manager.getSettings();
+        settings.equirectangular = true;
+        ASSERT_TRUE(manager.updateSettingsFromUser(settings));
+        EXPECT_TRUE(manager.getSettings().equirectangular);
+        EXPECT_FALSE(manager.getSettings().orthographic);
+
+        settings = manager.getSettings();
+        settings.orthographic = true;
+        settings.ortho_scale = 73.0f;
+        ASSERT_TRUE(manager.updateSettingsFromUser(settings));
+        EXPECT_TRUE(manager.getSettings().orthographic);
+        EXPECT_FALSE(manager.getSettings().equirectangular);
+        EXPECT_FLOAT_EQ(manager.getSettings().ortho_scale, 73.0f);
+        EXPECT_EQ(manager.getSettings().raster_backend, lfs::rendering::GaussianRasterBackend::ThreeDgs);
+    }
+
+    TEST_F(RenderingManagerEventsTest, DisablingOrthographicPreservesPanorama) {
+        RenderingManager manager;
+        auto event = lfs::core::events::ui::RenderSettingsChanged{};
+        event.equirectangular = true;
+        event.emit();
+        const auto before = manager.getSettings();
+        manager.setOrthographic(false, 900.0f, 7.5f);
+        const auto after = manager.getSettings();
+        EXPECT_TRUE(after.equirectangular);
+        EXPECT_FALSE(after.orthographic);
+        EXPECT_FLOAT_EQ(after.ortho_scale, before.ortho_scale);
+        EXPECT_EQ(after.raster_backend, before.raster_backend);
+        EXPECT_EQ(after.raster_backend_before_equirectangular, before.raster_backend_before_equirectangular);
+    }
+
+    TEST_F(RenderingManagerEventsTest, RestoredConflictingProjectionUsesPanorama) {
+        for (const auto backend : {lfs::rendering::GaussianRasterBackend::ThreeDgs,
+                                   lfs::rendering::GaussianRasterBackend::ThreeDgut}) {
+            for (const bool already_orthographic : {false, true}) {
+                RenderingManager manager;
+                manager.setOrthographic(already_orthographic, 900.0f, 7.5f);
+                auto saved = manager.getSettings();
+                saved.orthographic = true;
+                saved.equirectangular = true;
+                saved.ortho_scale = 73.0f;
+                saved.focal_length_mm = 35.0f;
+                saved.raster_backend = backend;
+                const auto json = project::renderSettingsToProjectJson(saved);
+                const auto original_json = json.dump();
+                auto restored = project::renderSettingsFromProjectJson(json, manager.getSettings());
+                ASSERT_TRUE(restored);
+                // Match the settings restoration used by the VIEW chapter.
+                manager.updateSettings(*restored);
+                const auto effective = manager.getSettings();
+                EXPECT_TRUE(effective.equirectangular);
+                EXPECT_FALSE(effective.orthographic);
+                EXPECT_FLOAT_EQ(effective.ortho_scale, saved.ortho_scale);
+                EXPECT_FLOAT_EQ(effective.focal_length_mm, saved.focal_length_mm);
+                EXPECT_EQ(effective.raster_backend, lfs::rendering::GaussianRasterBackend::ThreeDgut);
+                EXPECT_EQ(json.dump(), original_json);
+                EXPECT_TRUE(json.at("orthographic").get<bool>());
+                EXPECT_TRUE(json.at("equirectangular").get<bool>());
+
+                // Subsequent split restoration applies the effective settings again.
+                manager.updateSettings(effective);
+                EXPECT_FALSE(manager.getSettings().orthographic);
+                EXPECT_TRUE(manager.getSettings().equirectangular);
+            }
+        }
+    }
+
+    TEST_F(RenderingManagerEventsTest, RestoredValidProjectionsPreserveSavedSettings) {
+        for (const auto backend : {lfs::rendering::GaussianRasterBackend::ThreeDgs,
+                                   lfs::rendering::GaussianRasterBackend::ThreeDgut}) {
+            for (const int projection : {0, 1, 2}) {
+                RenderingManager manager;
+                auto saved = manager.getSettings();
+                saved.orthographic = projection == 1;
+                saved.equirectangular = projection == 2;
+                saved.ortho_scale = 73.0f;
+                saved.focal_length_mm = 35.0f;
+                saved.raster_backend = backend;
+                const auto restored = project::renderSettingsFromProjectJson(
+                    project::renderSettingsToProjectJson(saved));
+                ASSERT_TRUE(restored);
+                manager.updateSettings(*restored);
+                const auto effective = manager.getSettings();
+                EXPECT_EQ(effective.orthographic, saved.orthographic);
+                EXPECT_EQ(effective.equirectangular, saved.equirectangular);
+                EXPECT_FLOAT_EQ(effective.ortho_scale, saved.ortho_scale);
+                EXPECT_FLOAT_EQ(effective.focal_length_mm, saved.focal_length_mm);
+                EXPECT_EQ(effective.raster_backend, restored->raster_backend);
+            }
+        }
+    }
+
+    TEST_F(RenderingManagerEventsTest, UserSettingsPreserveUnchangedProjection) {
+        for (const int projection : {0, 1, 2}) {
+            RenderingManager manager;
+            auto settings = manager.getSettings();
+            settings.orthographic = projection == 1;
+            settings.equirectangular = projection == 2;
+            settings.ortho_scale = 73.0f;
+            manager.updateSettings(settings);
+            const auto before = manager.getSettings();
+
+            settings = before;
+            settings.show_grid = !settings.show_grid;
+            ASSERT_TRUE(manager.updateSettingsFromUser(settings));
+            const auto after = manager.getSettings();
+            EXPECT_EQ(after.orthographic, before.orthographic);
+            EXPECT_EQ(after.equirectangular, before.equirectangular);
+            EXPECT_FLOAT_EQ(after.ortho_scale, before.ortho_scale);
+            EXPECT_FLOAT_EQ(after.focal_length_mm, before.focal_length_mm);
+            EXPECT_EQ(after.raster_backend, before.raster_backend);
+            EXPECT_EQ(after.raster_backend_before_equirectangular, before.raster_backend_before_equirectangular);
+        }
     }
 
     TEST_F(RenderingManagerEventsTest, OrthographicLeaveKeepsFocalLength) {

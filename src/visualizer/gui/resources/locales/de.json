@@ -1,6 +1,15 @@
 {
+  "io.mask_decode_failed": "Maske konnte nicht dekodiert werden",
+  "io.dataset_image_unreadable_one": "Das Datensatzbild '{}' kann nicht gelesen werden. Die Kamera bleibt in der Szene, aber das Training kann bei seiner Verwendung fehlschlagen.",
+  "io.dataset_image_unreadable_many": "{} Datensatzbilder können nicht gelesen werden (Beispiele: {}). Ihre Kameras bleiben in der Szene, aber das Training kann bei ihrer Verwendung fehlschlagen.",
+  "training.unreadable_image": "Ein Trainingsbild konnte nicht gelesen werden. Unter Details finden Sie die Datei und den Decoderfehler.",
   "training.reset_before_strategy_change": "Setzen Sie das Training zurück, bevor Sie die Strategie ändern.",
+  "io.mesh_no_triangle_faces": "Die Meshdatei enthält keine Dreiecksflächen.",
   "io.no_finite_seed_points": "Die Punktwolke enthält keine endlichen Ausgangspunkte. Die Initialisierung erfolgt zufällig.",
+  "io.dataset_camera_invalid_focal": "{} Dataset-Kamera(s) mit null, negativem oder nicht endlichem Brennpunkt wurden übersprungen (Beispiele: {}).",
+  "io.dataset_camera_no_valid_focal": "Keine Dataset-Kamera hat eine gültige Brennweite. Prüfen Sie die Kamerakalibrierung und laden Sie das Dataset erneut.",
+  "io.mesh_nonfinite_vertices": "Das Mesh enthält nicht endliche Scheitelpunktkoordinaten.",
+  "io.colmap_skipped_invalid_pose": "COLMAP-Import: Bilder mit ungültiger Pose übersprungen (Anzahl: {}; Beispiele: {} [{}])",
   "ui.vram_window_1m": "1 min",
   "ui.vram_process_nvml_tooltip": "GPU-Speicher des Prozesses laut Betriebssystem oder GPU-Treiber.",
   "ui.vram_process_unavailable_tooltip": "GPU-Speicher des Prozesses ist nicht verfügbar. Die Gerätenutzung umfasst andere Anwendungen.",
@@ -1012,6 +1021,11 @@
     "reset_section_success": "Bereich sofort zurückgesetzt.",
     "reset_section_failed": "Einstellungen konnten nicht zurückgesetzt werden.",
     "ui_preferences_save_failed": "Die Einstellungen der Benutzeroberfläche konnten nicht gespeichert werden.",
+    "ui_preferences_backup_title": "Sicherung der Oberflächeneinstellungen erstellt",
+    "ui_preferences_backup_message": "Beschädigte Oberflächeneinstellungen wurden vor dem Ersetzen neben ui_preferences.json gesichert.",
+    "legacy_layout_backup_message": "Beschädigte alte Layouteinstellungen wurden neben layout.json gesichert. Andere Oberflächeneinstellungen wurden geladen.",
+    "legacy_settings_conflict_title": "Ältere Einstellungen sind getrennt",
+    "legacy_settings_conflict_message": "Nach der Migration wurden Einstellungen einer älteren Version gefunden. Die aktuellen Einstellungen blieben erhalten; Änderungen in der älteren Version werden nicht automatisch übernommen.",
     "reset_all_settings": "Alle Einstellungen zurücksetzen",
     "reset_all_settings_confirmation": "Sprache, Theme, UI-Skalierung, Szenenrekonstruktion, Eingabeeinstellungen, MCP-Server, Layout und Fensterstatus auf die Standardwerte zurücksetzen? Dies wird sofort angewendet. Ist ein .licht-Projekt geöffnet, wird dessen gespeichertes Layout beim nächsten Speichern ersetzt; Projektinhalte, Datensätze, Exporte, Plugins und Cache bleiben unverändert.",
     "reset_all_settings_success": "Alle Einstellungen, das Layout und der Fensterstatus wurden sofort zurückgesetzt.",
@@ -1489,10 +1503,15 @@
     "file": "Datei",
     "items": "Elemente",
     "and_more": "... und",
+    "and_more_in_log": "... und {} weitere (vollständige Liste im Protokoll)",
     "cannot_open": "Kann nicht öffnen"
   },
   "file_drop": {
-    "blocked_during_training": "Beenden Sie das Training, bevor Sie eine neue Szene laden."
+    "drop_video_project_separately": "Videos und Projekte müssen einzeln abgelegt werden. Die aufgeführten Elemente wurden nicht geöffnet.",
+    "supported_formats_detail": "Unterstützte Formate: .licht, .ply, .sog, .ssog, lod-meta.json, .spz, .rad, .usd, .usda, .usdc, .usdz, .obj, .fbx, .gltf, .glb, .stl, .dae, .hdr, .exr, .json, .resume, {} oder Datensatzverzeichnisse",
+    "blocked_during_training": "Beenden Sie das Training, bevor Sie eine neue Szene laden.",
+    "cancelled_by_new_project": "Die Aktion „Neues Projekt“ hat diese Dateiablage abgebrochen. Legen Sie die Datei erneut ab, um sie zu laden.",
+    "cancelled_by_project_switch": "Die abgelegte Datei wurde nicht geladen, weil ein Projektvorgang gestartet wurde. Legen Sie sie erneut ab, um sie zu laden."
   },
   "export_dialog": {
     "folder_name": "Ordnername",
@@ -1544,12 +1563,23 @@
     "status_label": "Status: %s"
   },
   "input_settings": {
+    "mouse_back": "Maustaste Zurück",
+    "mouse_forward": "Maustaste Vorwärts",
+    "invalid_profile_name": "Ungültiger Profilname. Verwenden Sie einen einfachen Namen ohne Pfadtrennzeichen oder reservierte Zeichen.",
+    "profile_save_failed": "Das Eingabeprofil konnte nicht gespeichert werden.",
+    "invalid_binding": "Diese Tastenkombination kann für diese Aktion nicht verwendet werden.",
+    "damaged_profile_backed_up": "Eine beschädigte Tastenbelegung wurde vor dem Speichern gesichert. Die Originaldatei liegt neben dem Profil.",
+    "invalid_entries_skipped": "Übersprungene und erhaltene Tastaturbelegungseinträge an Positionen ab 1: ",
+    "newer_profile_unchanged": "Diese Tastenbelegung stammt aus einer neueren Version. Sie wurde weder geladen noch geändert.",
+    "core_actions_unreachable": "Einige wichtige Tastenkürzel dieser Belegung sind nicht erreichbar. Sie können nur diese Aktionen wiederherstellen.",
+    "restore_core_actions": "Standards für diese Aktionen wiederherstellen",
     "active_profile": "Aktives Profil",
     "save_current_profile": "Aktuelles Profil speichern",
     "reset_to_default": "Auf Standard zurücksetzen",
     "export": "Exportieren...",
     "import": "Importieren...",
     "rebind": "Neu belegen",
+    "clear_binding": "Entfernen",
     "cancel": "Abbrechen",
     "replace": "Ersetzen",
     "conflict_title": "Belegung ersetzen?",
@@ -1569,6 +1599,7 @@
     "click_again_double": "Nochmal klicken für Doppelklick...",
     "tool_mode": "Werkzeugmodus",
     "select_tool_mode": "Werkzeugmodus auswählen um Belegungen anzuzeigen/bearbeiten",
+    "altgr_capture_unsupported": "AltGr-Tastenkürzel können nicht aufgenommen werden. Verwenden Sie ein Kürzel ohne AltGr.",
     "global_bindings_hint": "Globale Belegungen gelten überall, sofern nicht überschrieben",
     "tool_bindings_hint": "Werkzeugspezifische Belegungen überschreiben globale Belegungen",
     "section.navigation": "NAVIGATION",
@@ -1835,6 +1866,9 @@
     "supported_by": "Unterstützt von",
     "click_to_continue": "Klicken Sie irgendwo um fortzufahren",
     "loaded_plugins": "Startup-Plugins geladen {}/{}",
+    "plugin_invalid_manifest": "Start-Plugin {} ist nicht verfügbar: ungültiges Manifest",
+    "plugin_incompatible_api": "Start-Plugin {} kann nicht geladen werden: Plugin-API-Version passt nicht",
+    "plugin_load_failed": "Start-Plugin {} konnte nicht geladen werden",
     "drop_files_title": "Dateien hier ablegen um zu starten",
     "drop_files_subtitle": "PLY, SOG, SSOG, SPZ, GLB, RAD, USD, COLMAP Datensatz oder Projektdatei",
     "drop_files_hint": "Oder {path} verwenden",
@@ -2164,6 +2198,12 @@
       "updated": "{name} wurde aktualisiert"
     },
     "title_line": "Durchsuchen Sie installierbare Plugins aus der Plugin-Registry.",
+    "success_with_warning": "{success} {warning}",
+    "warning.unverified_source": "Warnung: Für diese Plugin-Quelle gibt es keinen SHA-256-Prüfwert; das Archiv ist nicht verifiziert.",
+    "error.checksum_mismatch": "Die SHA-256-Prüfung des Plugin-Archivs ist fehlgeschlagen.",
+    "error.digest_conflict": "Der URL-Prüfwert und das sha256-Argument stimmen nicht überein.",
+    "error.invalid_digest": "Der SHA-256-Prüfwert muss genau 64 hexadezimale Zeichen enthalten.",
+    "error.digest_requires_archive": "Die SHA-256-Prüfung erfordert die Archiv-Installationsart.",
     "warning_body": "WARNUNG: LFS spricht keine direkte Empfehlung aus und übernimmt keine Verantwortung. Nutzung auf eigenes Risiko.",
     "filter_label": "Filter",
     "sort_label": "Sortieren nach",
@@ -2539,6 +2579,8 @@
     "perf_enable_tracking": "Aktivieren",
     "perf_expand": "Ausklappen",
     "perf_collapse": "Einklappen",
+    "gt_metrics_training_required": "Kamerametriken benötigen eine initialisierte Trainingssitzung.",
+    "gt_metrics_calculation_failed": "Metriken für diese Ansicht konnten nicht berechnet werden.",
     "perf_hud_tooltip": "Leistungs-HUD ein- oder ausblenden"
   },
   "runtime": {
@@ -2603,6 +2645,9 @@
     "export_cancelled": "Export vom Benutzer abgebrochen",
     "no_splat_data": "Keine Splat-Daten zum Exportieren",
     "export_streamed_lod": "\"{}\" kann nicht exportiert werden: Das Modell passt nicht in den Arbeitsspeicher und wird von der Festplatte gestreamt.",
+    "export_extension_required": "Der Dateiname für den Export muss auf {} enden.",
+    "export_extension_warning": "Die exportierten {}-Daten haben nicht die übliche Dateiendung. Andere Anwendungen erkennen sie möglicherweise nicht.",
+    "export_sh_degree_clamped": "Der angeforderte SH-Grad wurde für die ausgewählten Modelle auf {} begrenzt.",
     "video_encoder_unavailable": "Video-Encoder nicht verfügbar",
     "scene_manager_unavailable": "Szenenverwaltung ist nicht verfügbar",
     "no_model_selected": "Kein Modell zum Exportieren ausgewählt",
@@ -2666,6 +2711,7 @@
     "edge_off_help": "Kante 1–2 entlang X: AUS. Richtet die Ebene ohne die zusätzliche Drehung aus."
   },
   "toast": {
+    "camera_training_next_run": "Kameraänderungen gelten erst beim nächsten Trainingslauf. Dieser Lauf verwendet weiterhin die bisherigen Bilder.",
     "trainer_not_restored": {
       "title": "Trainer nicht wiederhergestellt",
       "message": "Das Projektmodell ist zum Anzeigen verfügbar, aber das Training konnte nicht fortgesetzt werden. Prüfen Sie den Dataset-Pfad und die Protokolle."
@@ -3126,5 +3172,8 @@
   "runtime.import_batch_failed.other": "{} Dateien wurden nicht geladen",
   "runtime.import_out_of_memory": "Nicht genügend Grafikspeicher",
   "runtime.import_batch_kept": "Die anderen Dateien wurden geladen und sind weiterhin in der Szene verfügbar.",
-  "runtime.import_render_failed": "Diese Datei konnte nicht für die Darstellung vorbereitet werden"
+  "runtime.import_render_failed": "Diese Datei konnte nicht für die Darstellung vorbereitet werden",
+  "training.iterations_must_exceed_current": "Die maximale Iterationszahl muss größer als der aktuelle Trainingsschritt sein.",
+  "runtime.camera_fov_out_of_range": "fov_degrees muss endlich sowie größer als 0 und kleiner als 180 Grad sein",
+  "runtime.camera_fov_clamped": "Der angeforderte fov_degrees-Wert wurde auf {:.2f} Grad begrenzt"
 }

@@ -33,6 +33,7 @@
 #include "viewport_interaction_context.hpp"
 #include "viewport_interop_service.hpp"
 #include "viewport_overlay_service.hpp"
+#include "visualizer/app_store.hpp"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -293,6 +294,7 @@ namespace lfs::vis {
         [[nodiscard]] lfs::Result<void> updateSettingsFromUser(const RenderSettings& settings);
 
         // Settings management (also used for restoring saved state).
+        void restoreSettingsFromProject(const RenderSettings& settings);
         void updateSettings(const RenderSettings& settings);
         void updateSettings(const RenderSettings& settings, DirtyMask dirty_flags);
         RenderSettings getSettings() const;
@@ -419,6 +421,7 @@ namespace lfs::vis {
             float psnr = 0.0f;
             std::optional<float> ssim;
             bool used_mask = false;
+            AppStore::CameraMetricsStatus status = AppStore::CameraMetricsStatus::Available;
         };
 
         void clearLatestCameraMetrics();
@@ -582,6 +585,11 @@ namespace lfs::vis {
         struct VulkanMeshFrame {
             glm::mat4 view_projection{1.0f};
             glm::vec3 camera_position{0.0f};
+            glm::vec3 camera_backward{0.0f, 0.0f, 1.0f};
+            bool depth_view = false;
+            float depth_view_min = 0.0f;
+            float depth_view_max = 1.0f;
+            bool depth_grayscale = false;
             std::vector<lfs::vis::VulkanMeshDrawItem> items;
             std::vector<lfs::vis::VulkanMeshViewportPanel> panels;
             lfs::vis::VulkanEnvironmentParams environment;
@@ -592,6 +600,10 @@ namespace lfs::vis {
         [[nodiscard]] VulkanMeshFrame getVulkanMeshFrame() const {
             std::lock_guard lock(vulkan_mesh_frame_mutex_);
             return vulkan_mesh_frame_;
+        }
+        [[nodiscard]] bool hasVulkanMeshItems() const {
+            std::lock_guard lock(vulkan_mesh_frame_mutex_);
+            return !vulkan_mesh_frame_.items.empty();
         }
         void clearVulkanMeshFrame();
 
@@ -900,6 +912,10 @@ namespace lfs::vis {
         std::uint64_t point_cloud_last_frame_serial_ = 0;
         std::uint64_t point_cloud_data_revision_ = 0;
         std::uint64_t point_cloud_preview_selection_revision_ = 0;
+        // One texel keeps mesh-only independent panels renderable without
+        // allocating or uploading a full-size background each frame.
+        std::shared_ptr<lfs::core::Tensor> mesh_only_split_background_;
+        glm::vec4 mesh_only_split_background_color_{-1.0f};
         VulkanContext* last_vulkan_context_ = nullptr;
         std::atomic<bool> vksplat_terminal_release_pending_{false};
         std::chrono::steady_clock::time_point vksplat_idle_since_{};
@@ -973,6 +989,7 @@ namespace lfs::vis {
         // #1574 GT depth/normal async hold-then-swap: at most one outstanding ticket.
         // Panel keeps gt_async_held_display_ until the next ticket delivers (never blank).
         std::uint64_t gt_async_depth_ticket_ = 0;
+        bool gt_async_refresh_pending_ = false;
         lfs::core::Tensor gt_async_depth_dest_{};
         GTComparisonMode gt_async_ticket_mode_ = GTComparisonMode::RGB;
         std::optional<lfs::rendering::CameraIntrinsics> gt_async_ticket_intrinsics_;

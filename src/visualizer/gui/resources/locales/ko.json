@@ -1,6 +1,15 @@
 {
+  "io.mask_decode_failed": "마스크를 디코딩하지 못했습니다",
+  "io.dataset_image_unreadable_one": "데이터셋 이미지 '{}'을(를) 읽을 수 없습니다. 카메라는 장면에 남지만 이 이미지를 사용하면 학습이 실패할 수 있습니다.",
+  "io.dataset_image_unreadable_many": "데이터셋 이미지 {}개를 읽을 수 없습니다(예: {}). 카메라는 장면에 남지만 이 이미지를 사용하면 학습이 실패할 수 있습니다.",
+  "training.unreadable_image": "학습 이미지를 읽을 수 없습니다. 파일과 디코더 오류를 확인하려면 세부 정보를 여세요.",
   "training.reset_before_strategy_change": "전략을 변경하기 전에 훈련을 초기화하세요.",
+  "io.mesh_no_triangle_faces": "메시 파일에 삼각형 면이 없습니다.",
   "io.no_finite_seed_points": "포인트 클라우드에 유한한 좌표를 가진 초기 점이 없습니다. 무작위로 초기화합니다.",
+  "io.dataset_camera_invalid_focal": "초점 거리가 0이거나 음수이거나 유한하지 않은 데이터셋 카메라 {}개를 건너뛰었습니다 (예: {}).",
+  "io.dataset_camera_no_valid_focal": "유효한 초점 거리를 가진 데이터셋 카메라가 없습니다. 카메라 보정 값을 확인한 뒤 데이터셋을 다시 불러오세요.",
+  "io.mesh_nonfinite_vertices": "메시에 유한하지 않은 정점 좌표가 있습니다.",
+  "io.colmap_skipped_invalid_pose": "COLMAP 가져오기에서 자세가 유효하지 않은 이미지 {}개를 건너뛰었습니다(표본 {}개: {})",
   "ui.vram_window_1m": "1분",
   "ui.vram_process_nvml_tooltip": "운영 체제 또는 GPU 드라이버가 보고한 프로세스 GPU 메모리입니다.",
   "ui.vram_process_unavailable_tooltip": "프로세스 GPU 메모리를 확인할 수 없습니다. 장치 사용량에는 다른 애플리케이션이 포함됩니다.",
@@ -1012,6 +1021,11 @@
     "reset_section_success": "섹션을 즉시 재설정했습니다.",
     "reset_section_failed": "설정을 재설정할 수 없습니다.",
     "ui_preferences_save_failed": "인터페이스 환경설정을 저장할 수 없습니다.",
+    "ui_preferences_backup_title": "UI 설정 백업을 만들었습니다",
+    "ui_preferences_backup_message": "손상된 UI 설정을 교체하기 전에 ui_preferences.json 옆에 백업했습니다.",
+    "legacy_layout_backup_message": "손상된 이전 레이아웃 설정을 layout.json 옆에 백업했습니다. 다른 화면 설정은 불러왔습니다.",
+    "legacy_settings_conflict_title": "이전 설정은 별도로 유지됩니다",
+    "legacy_settings_conflict_message": "마이그레이션 후 이전 버전에서 작성한 설정이 발견되었습니다. 현재 설정은 유지되며 이전 버전의 변경 내용은 자동으로 동기화되지 않습니다.",
     "reset_all_settings": "모든 설정 재설정",
     "reset_all_settings_confirmation": "언어, 테마, UI 배율, 장면 재구성, 입력 기본 설정, MCP 서버, 레이아웃 및 창 상태를 기본값으로 복원할까요? 즉시 적용됩니다. .licht 프로젝트가 열려 있으면 다음 저장 시 저장된 레이아웃이 교체됩니다. 프로젝트 내용, 데이터 세트, 내보내기, 플러그인 및 캐시는 영향을 받지 않습니다.",
     "reset_all_settings_success": "모든 기본 설정, 레이아웃 및 창 상태를 즉시 재설정했습니다.",
@@ -1489,10 +1503,15 @@
     "file": "파일",
     "items": "항목",
     "and_more": "... 외",
+    "and_more_in_log": "... 외 {}개 (전체 목록은 로그에 있음)",
     "cannot_open": "열 수 없음"
   },
   "file_drop": {
-    "blocked_during_training": "새 장면을 불러오기 전에 학습을 중지하세요."
+    "drop_video_project_separately": "동영상과 프로젝트는 각각 따로 놓으세요. 목록의 항목은 열리지 않았습니다.",
+    "supported_formats_detail": "지원 형식: .licht, .ply, .sog, .ssog, lod-meta.json, .spz, .rad, .usd, .usda, .usdc, .usdz, .obj, .fbx, .gltf, .glb, .stl, .dae, .hdr, .exr, .json, .resume, {} 또는 데이터셋 디렉터리",
+    "blocked_during_training": "새 장면을 불러오기 전에 학습을 중지하세요.",
+    "cancelled_by_new_project": "새 프로젝트 작업으로 이 파일 놓기가 취소되었습니다. 파일을 다시 놓아 불러오세요.",
+    "cancelled_by_project_switch": "프로젝트 작업이 시작되어 놓은 파일을 불러오지 못했습니다. 파일을 다시 놓아 불러오세요."
   },
   "export_dialog": {
     "folder_name": "폴더 이름",
@@ -1544,12 +1563,23 @@
     "status_label": "상태: %s"
   },
   "input_settings": {
+    "mouse_back": "마우스 뒤로 버튼",
+    "mouse_forward": "마우스 앞으로 버튼",
+    "invalid_profile_name": "잘못된 프로필 이름입니다. 경로 구분자나 예약 문자가 없는 이름을 사용하세요.",
+    "profile_save_failed": "입력 프로필을 저장할 수 없습니다.",
+    "invalid_binding": "이 단축키는 이 동작에 사용할 수 없습니다.",
+    "damaged_profile_backed_up": "손상된 키 맵을 저장하기 전에 백업했습니다. 원본 파일은 프로필 옆에 보관됩니다.",
+    "invalid_entries_skipped": "건너뛰고 보존한 키 맵 항목의 위치 (1부터): ",
+    "newer_profile_unchanged": "이 키맵은 최신 버전에서 저장되었습니다. 불러오거나 변경하지 않았습니다.",
+    "core_actions_unreachable": "이 키맵의 일부 필수 단축키를 사용할 수 없습니다. 해당 동작만 복원할 수 있습니다.",
+    "restore_core_actions": "이 동작의 기본값 복원",
     "active_profile": "활성 프로필",
     "save_current_profile": "현재 프로필 저장",
     "reset_to_default": "기본값으로 재설정",
     "export": "내보내기...",
     "import": "가져오기...",
     "rebind": "다시 바인딩",
+    "clear_binding": "지우기",
     "cancel": "취소",
     "replace": "교체",
     "conflict_title": "바인딩을 교체할까요?",
@@ -1569,6 +1599,7 @@
     "click_again_double": "더블 클릭하려면 다시 클릭...",
     "tool_mode": "도구 모드",
     "select_tool_mode": "바인딩을 보거나 편집하려면 도구 모드 선택",
+    "altgr_capture_unsupported": "AltGr 단축키는 캡처할 수 없습니다. AltGr를 사용하지 않는 단축키를 사용하세요.",
     "global_bindings_hint": "전역 바인딩은 재정의되지 않는 한 모든 곳에 적용됩니다",
     "tool_bindings_hint": "도구별 바인딩은 전역 바인딩을 재정의합니다",
     "section.navigation": "내비게이션",
@@ -1835,6 +1866,9 @@
     "supported_by": "지원:",
     "click_to_continue": "계속하려면 아무 곳이나 클릭",
     "loaded_plugins": "시작 플러그인을 불러왔습니다 {}/{}",
+    "plugin_invalid_manifest": "시작 플러그인 {}을(를) 사용할 수 없습니다: 매니페스트가 올바르지 않습니다",
+    "plugin_incompatible_api": "시작 플러그인 {}을(를) 불러올 수 없습니다: 플러그인 API 버전이 일치하지 않습니다",
+    "plugin_load_failed": "시작 플러그인 {}을(를) 불러오지 못했습니다",
     "drop_files_title": "시작하려면 파일을 여기에 드롭하세요",
     "drop_files_subtitle": "PLY, SOG, SSOG, SPZ, GLB, RAD, USD, COLMAP 데이터셋 또는 프로젝트 파일",
     "drop_files_hint": "또는 {path} 사용",
@@ -2164,6 +2198,12 @@
       "updated": "{name} 업데이트됨"
     },
     "title_line": "플러그인 레지스트리에서 설치 가능한 플러그인을 찾아보세요.",
+    "success_with_warning": "{success} {warning}",
+    "warning.unverified_source": "경고: 이 플러그인 소스에는 SHA-256 다이제스트가 없어 아카이브가 검증되지 않았습니다.",
+    "error.checksum_mismatch": "플러그인 아카이브 SHA-256 검증에 실패했습니다.",
+    "error.digest_conflict": "URL 다이제스트와 sha256 인수가 일치하지 않습니다.",
+    "error.invalid_digest": "SHA-256 다이제스트는 정확히 64개의 16진수 문자여야 합니다.",
+    "error.digest_requires_archive": "SHA-256 검증에는 아카이브 설치 방식이 필요합니다.",
     "warning_body": "경고: LFS는 직접 보증하지 않으며 책임을 지지 않습니다. 사용은 본인 책임입니다.",
     "filter_label": "필터",
     "sort_label": "정렬 기준",
@@ -2539,6 +2579,8 @@
     "perf_enable_tracking": "활성화",
     "perf_expand": "펼치기",
     "perf_collapse": "접기",
+    "gt_metrics_training_required": "카메라 지표를 사용하려면 학습 세션을 초기화해야 합니다.",
+    "gt_metrics_calculation_failed": "이 보기의 지표를 계산할 수 없습니다.",
     "perf_hud_tooltip": "성능 HUD 표시 또는 숨기기"
   },
   "runtime": {
@@ -2603,6 +2645,9 @@
     "export_cancelled": "사용자가 내보내기를 취소했습니다",
     "no_splat_data": "내보낼 스플랫 데이터가 없습니다",
     "export_streamed_lod": "\"{}\"을(를) 내보낼 수 없습니다: 모델이 너무 커서 메모리에 들어가지 않으며 디스크에서 스트리밍됩니다.",
+    "export_extension_required": "내보낼 파일 이름은 {}로 끝나야 합니다.",
+    "export_extension_warning": "내보낸 {} 데이터 파일에 일반적인 확장자가 없습니다. 다른 앱에서 인식하지 못할 수 있습니다.",
+    "export_sh_degree_clamped": "요청한 SH 차수가 선택한 모델에 맞춰 {}(으)로 제한되었습니다.",
     "video_encoder_unavailable": "비디오 인코더를 사용할 수 없습니다",
     "scene_manager_unavailable": "씬 관리자를 사용할 수 없습니다",
     "no_model_selected": "내보낼 모델이 선택되지 않았습니다",
@@ -2666,6 +2711,7 @@
     "edge_off_help": "점 1에서 2로 향하는 변을 X 방향으로: 꺼짐. 추가 회전 없이 평면을 수평으로 맞춥니다."
   },
   "toast": {
+    "camera_training_next_run": "카메라 변경 사항은 다음 학습부터 적용됩니다. 현재 학습은 기존 이미지를 계속 사용합니다.",
     "trainer_not_restored": {
       "title": "트레이너를 복원하지 못함",
       "message": "프로젝트 모델은 볼 수 있지만 학습을 재개할 수 없습니다. 데이터세트 경로와 로그를 확인하세요."
@@ -3126,5 +3172,8 @@
   "runtime.import_batch_failed.other": "파일 {}개를 불러오지 못했습니다",
   "runtime.import_out_of_memory": "GPU 메모리가 부족합니다",
   "runtime.import_batch_kept": "나머지 파일은 불러왔으며 장면에서 계속 사용할 수 있습니다.",
-  "runtime.import_render_failed": "이 파일을 렌더링할 준비를 하지 못했습니다"
+  "runtime.import_render_failed": "이 파일을 렌더링할 준비를 하지 못했습니다",
+  "training.iterations_must_exceed_current": "최대 반복 횟수는 현재 훈련 단계보다 커야 합니다.",
+  "runtime.camera_fov_out_of_range": "fov_degrees는 유한한 값이어야 하며 0도보다 크고 180도보다 작아야 합니다",
+  "runtime.camera_fov_clamped": "요청한 fov_degrees 값이 {:.2f}도로 제한되었습니다"
 }

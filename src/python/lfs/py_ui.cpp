@@ -4824,6 +4824,7 @@ namespace lfs::python {
                 state["format"] = export_state.format;
                 state["path"] = export_state.path;
                 state["error"] = export_state.error;
+                state["warning"] = export_state.warning;
                 state["commit_uuid"] = export_state.commit_uuid;
                 return state;
             },
@@ -5205,8 +5206,8 @@ namespace lfs::python {
 
         m.def(
             "set_zoom_speed_preference",
-            [](const float speed) {
-                vis::saveZoomSpeedPreference(speed);
+            [](const float speed, const bool persist) {
+                vis::saveZoomSpeedPreference(speed, persist);
                 const float zoom_speed = vis::loadZoomSpeedPreference();
                 const float navigation_speed = vis::loadNavigationSpeedPreference();
                 invoke_on_viewer([zoom_speed, navigation_speed] {
@@ -5214,7 +5215,8 @@ namespace lfs::python {
                         controller->applyNavigationSpeedPreferences(zoom_speed, navigation_speed);
                 });
             },
-            nb::arg("speed"), "Set the default camera zoom speed (1-100)");
+            nb::arg("speed"), nb::arg("persist") = true,
+            "Set the default camera zoom speed (1-100)");
 
         m.def(
             "get_zoom_speed_preference",
@@ -5223,8 +5225,8 @@ namespace lfs::python {
 
         m.def(
             "set_navigation_speed_preference",
-            [](const float speed) {
-                vis::saveNavigationSpeedPreference(speed);
+            [](const float speed, const bool persist) {
+                vis::saveNavigationSpeedPreference(speed, persist);
                 const float zoom_speed = vis::loadZoomSpeedPreference();
                 const float navigation_speed = vis::loadNavigationSpeedPreference();
                 invoke_on_viewer([zoom_speed, navigation_speed] {
@@ -5232,7 +5234,8 @@ namespace lfs::python {
                         controller->applyNavigationSpeedPreferences(zoom_speed, navigation_speed);
                 });
             },
-            nb::arg("speed"), "Set the default WASD navigation speed (1-100)");
+            nb::arg("speed"), nb::arg("persist") = true,
+            "Set the default WASD navigation speed (1-100)");
 
         m.def(
             "get_navigation_speed_preference",

@@ -1,6 +1,15 @@
 {
+  "io.mask_decode_failed": "Nie udało się zdekodować maski",
+  "io.dataset_image_unreadable_one": "Nie można odczytać obrazu zestawu danych '{}'. Jego kamera pozostaje w scenie, ale użycie obrazu może spowodować niepowodzenie treningu.",
+  "io.dataset_image_unreadable_many": "Nie można odczytać {} obrazów zestawu danych (przykłady: {}). Ich kamery pozostają w scenie, ale użycie tych obrazów może spowodować niepowodzenie treningu.",
+  "training.unreadable_image": "Nie można odczytać obrazu treningowego. Otwórz Szczegóły, aby zobaczyć plik i błąd dekodera.",
   "training.reset_before_strategy_change": "Zresetuj trening przed zmianą strategii.",
+  "io.mesh_no_triangle_faces": "Plik siatki nie zawiera trójkątnych ścian.",
   "io.no_finite_seed_points": "Chmura punktów nie zawiera punktów początkowych o skończonych współrzędnych. Zostanie użyta losowa inicjalizacja.",
+  "io.dataset_camera_invalid_focal": "Pominięto {} kamer(y) zbioru danych z zerową, ujemną lub nieskończoną ogniskową (przykłady: {}).",
+  "io.dataset_camera_no_valid_focal": "Żadna kamera zbioru danych nie ma prawidłowej ogniskowej. Sprawdź kalibrację kamer i wczytaj zbiór danych ponownie.",
+  "io.mesh_nonfinite_vertices": "Siatka zawiera nieskończone lub nieokreślone współrzędne wierzchołków.",
+  "io.colmap_skipped_invalid_pose": "Podczas importu COLMAP pominięto obrazy z nieprawidłową pozą (liczba: {}; próbki: {} [{}])",
   "ui.vram_window_1m": "1 min",
   "ui.vram_process_nvml_tooltip": "Pamięć GPU procesu zgłaszana przez system operacyjny lub sterownik GPU.",
   "ui.vram_process_unavailable_tooltip": "Pamięć GPU procesu jest niedostępna. Użycie urządzenia obejmuje inne aplikacje.",
@@ -1012,6 +1021,11 @@
     "reset_section_success": "Sekcja została natychmiast zresetowana.",
     "reset_section_failed": "Nie można zresetować ustawień.",
     "ui_preferences_save_failed": "Nie udało się zapisać preferencji interfejsu.",
+    "ui_preferences_backup_title": "Utworzono kopię ustawień interfejsu",
+    "ui_preferences_backup_message": "Uszkodzone ustawienia interfejsu zapisano obok ui_preferences.json przed zastąpieniem.",
+    "legacy_layout_backup_message": "Uszkodzone stare ustawienia układu zapisano obok layout.json. Pozostałe ustawienia interfejsu zostały wczytane.",
+    "legacy_settings_conflict_title": "Starsze ustawienia są oddzielne",
+    "legacy_settings_conflict_message": "Po migracji znaleziono ustawienia zapisane przez starszą wersję. Zachowano bieżące ustawienia; zmiany w starszej wersji nie będą synchronizowane automatycznie.",
     "reset_all_settings": "Resetuj wszystkie ustawienia",
     "reset_all_settings_confirmation": "Przywrócić język, motyw, skalę interfejsu, rekonstrukcję sceny, preferencje wejścia, serwer MCP, układ i stan okna do wartości domyślnych? Zostanie to zastosowane natychmiast. Jeśli projekt .licht jest otwarty, jego zapisany układ zostanie zastąpiony przy następnym zapisie; zawartość projektu, zestawy danych, eksporty, wtyczki i pamięć podręczna nie zostaną zmienione.",
     "reset_all_settings_success": "Wszystkie preferencje, układ i stan okna zostały natychmiast zresetowane.",
@@ -1489,10 +1503,15 @@
     "file": "plik",
     "items": "elementy",
     "and_more": "... i",
+    "and_more_in_log": "... i jeszcze {} (pełna lista w dzienniku)",
     "cannot_open": "Nie można otworzyć"
   },
   "file_drop": {
-    "blocked_during_training": "Zatrzymaj trening przed załadowaniem nowej sceny."
+    "drop_video_project_separately": "Upuszczaj filmy i projekty osobno. Wymienione elementy nie zostały otwarte.",
+    "supported_formats_detail": "Obsługiwane formaty: .licht, .ply, .sog, .ssog, lod-meta.json, .spz, .rad, .usd, .usda, .usdc, .usdz, .obj, .fbx, .gltf, .glb, .stl, .dae, .hdr, .exr, .json, .resume, {} lub katalogi zestawów danych",
+    "blocked_during_training": "Zatrzymaj trening przed załadowaniem nowej sceny.",
+    "cancelled_by_new_project": "Operacja Nowy projekt anulowała upuszczenie tego pliku. Upuść plik ponownie, aby go wczytać.",
+    "cancelled_by_project_switch": "Upuszczony plik nie został wczytany, ponieważ rozpoczęto operację na projekcie. Upuść go ponownie, aby go wczytać."
   },
   "export_dialog": {
     "folder_name": "Nazwa folderu",
@@ -1544,12 +1563,23 @@
     "status_label": "Stan: %s"
   },
   "input_settings": {
+    "mouse_back": "Przycisk myszy Wstecz",
+    "mouse_forward": "Przycisk myszy Dalej",
+    "invalid_profile_name": "Nieprawidłowa nazwa profilu. Użyj prostej nazwy bez separatorów ścieżki i znaków zastrzeżonych.",
+    "profile_save_failed": "Nie udało się zapisać profilu wejściowego.",
+    "invalid_binding": "Tego skrótu nie można użyć dla tej czynności.",
+    "damaged_profile_backed_up": "Przed zapisaniem utworzono kopię uszkodzonej mapy klawiszy. Oryginalny plik znajduje się obok profilu.",
+    "invalid_entries_skipped": "Pominięte i zachowane wpisy mapy klawiszy na pozycjach od 1: ",
+    "newer_profile_unchanged": "Ta mapa klawiszy została zapisana w nowszej wersji. Nie została wczytana ani zmieniona.",
+    "core_actions_unreachable": "Niektóre ważne skróty w tej mapie są niedostępne. Możesz przywrócić tylko te działania.",
+    "restore_core_actions": "Przywróć domyślne skróty tych działań",
     "active_profile": "Aktywny Profil",
     "save_current_profile": "Zapisz Bieżący Profil",
     "reset_to_default": "Resetuj do Domyślnych",
     "export": "Eksportuj...",
     "import": "Importuj...",
     "rebind": "Przypisz Ponownie",
+    "clear_binding": "Wyczyść",
     "cancel": "Anuluj",
     "replace": "Zastąp",
     "conflict_title": "Zastąpić przypisanie?",
@@ -1569,6 +1599,7 @@
     "click_again_double": "Kliknij ponownie dla podwójnego kliknięcia...",
     "tool_mode": "Tryb Narzędzia",
     "select_tool_mode": "Wybierz tryb narzędzia, aby wyświetlić/edytować przypisania",
+    "altgr_capture_unsupported": "Nie można przechwycić skrótów AltGr. Użyj skrótu bez AltGr.",
     "global_bindings_hint": "Przypisania globalne obowiązują wszędzie, chyba że zostaną nadpisane",
     "tool_bindings_hint": "Przypisania specyficzne dla narzędzi nadpisują przypisania globalne",
     "section.navigation": "NAWIGACJA",
@@ -1835,6 +1866,9 @@
     "supported_by": "Wspierane przez",
     "click_to_continue": "Kliknij gdziekolwiek, aby kontynuować",
     "loaded_plugins": "Wczytano wtyczki startowe {}/{}",
+    "plugin_invalid_manifest": "Wtyczka startowa {} jest niedostępna: nieprawidłowy manifest",
+    "plugin_incompatible_api": "Nie można wczytać wtyczki startowej {}: niezgodna wersja API wtyczek",
+    "plugin_load_failed": "Nie udało się wczytać wtyczki startowej {}",
     "drop_files_title": "Upuść pliki tutaj, aby rozpocząć",
     "drop_files_subtitle": "PLY, SOG, SSOG, SPZ, GLB, RAD, USD, zbiór danych COLMAP lub plik projektu",
     "drop_files_hint": "Lub użyj {path}",
@@ -2164,6 +2198,12 @@
       "updated": "Zaktualizowano {name}"
     },
     "title_line": "Przeglądaj instalowalne wtyczki z rejestru wtyczek.",
+    "success_with_warning": "{success} {warning}",
+    "warning.unverified_source": "Ostrzeżenie: to źródło wtyczki nie ma skrótu SHA-256; archiwum nie jest zweryfikowane.",
+    "error.checksum_mismatch": "Weryfikacja SHA-256 archiwum wtyczki nie powiodła się.",
+    "error.digest_conflict": "Skrót URL i argument sha256 są różne.",
+    "error.invalid_digest": "Skrót SHA-256 musi zawierać dokładnie 64 znaki szesnastkowe.",
+    "error.digest_requires_archive": "Weryfikacja SHA-256 wymaga instalacji z archiwum.",
     "warning_body": "OSTRZEŻENIE: LFS nie udziela bezpośredniej rekomendacji ani nie ponosi odpowiedzialności. Używasz na własne ryzyko.",
     "filter_label": "Filtr",
     "sort_label": "Sortuj według",
@@ -2539,6 +2579,8 @@
     "perf_enable_tracking": "Włącz",
     "perf_expand": "Rozwiń",
     "perf_collapse": "Zwiń",
+    "gt_metrics_training_required": "Metryki kamery wymagają zainicjowanej sesji treningowej.",
+    "gt_metrics_calculation_failed": "Nie udało się obliczyć metryk dla tego widoku.",
     "perf_hud_tooltip": "Pokaż lub ukryj HUD wydajności"
   },
   "runtime": {
@@ -2603,6 +2645,9 @@
     "export_cancelled": "Eksport anulowany przez użytkownika",
     "no_splat_data": "Brak danych splat do wyeksportowania",
     "export_streamed_lod": "Nie można wyeksportować \"{}\": model jest zbyt duży, aby zmieścić się w pamięci, i jest strumieniowany z dysku.",
+    "export_extension_required": "Nazwa pliku eksportu musi kończyć się na {}.",
+    "export_extension_warning": "Wyeksportowane dane {} nie mają zwykłego rozszerzenia. Inne aplikacje mogą ich nie rozpoznać.",
+    "export_sh_degree_clamped": "Żądany stopień SH został ograniczony do {} dla wybranych modeli.",
     "video_encoder_unavailable": "Enkoder wideo jest niedostępny",
     "scene_manager_unavailable": "Menedżer scen jest niedostępny",
     "no_model_selected": "Nie wybrano modelu do eksportu",
@@ -2666,6 +2711,7 @@
     "edge_off_help": "Krawędź od 1 do 2 wzdłuż X: WYŁ. Poziomuje płaszczyznę bez dodatkowego obrotu."
   },
   "toast": {
+    "camera_training_next_run": "Zmiany kamer zostaną zastosowane przy następnym treningu. Bieżący trening nadal używa dotychczasowych obrazów.",
     "trainer_not_restored": {
       "title": "Nie przywrócono trenera",
       "message": "Model projektu jest dostępny do podglądu, ale nie udało się wznowić treningu. Sprawdź ścieżkę zestawu danych i logi."
@@ -3126,5 +3172,8 @@
   "runtime.import_batch_failed.other": "{} plików nie zostało wczytanych",
   "runtime.import_out_of_memory": "Za mało pamięci GPU",
   "runtime.import_batch_kept": "Pozostałe pliki zostały wczytane i nadal są dostępne w scenie.",
-  "runtime.import_render_failed": "Nie udało się przygotować tego pliku do wyświetlenia"
+  "runtime.import_render_failed": "Nie udało się przygotować tego pliku do wyświetlenia",
+  "training.iterations_must_exceed_current": "Maksymalna liczba iteracji musi być większa niż bieżący krok treningu.",
+  "runtime.camera_fov_out_of_range": "fov_degrees musi być skończone, większe od 0 i mniejsze niż 180 stopni",
+  "runtime.camera_fov_clamped": "Żądane fov_degrees ograniczono do {:.2f} stopni"
 }

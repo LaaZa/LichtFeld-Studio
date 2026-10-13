@@ -1,6 +1,15 @@
 {
+  "io.mask_decode_failed": "Masker kon niet worden gedecodeerd",
+  "io.dataset_image_unreadable_one": "Datasetafbeelding '{}' kan niet worden gelezen. De camera blijft in de scène, maar de training kan mislukken wanneer deze afbeelding wordt gebruikt.",
+  "io.dataset_image_unreadable_many": "{} datasetafbeeldingen kunnen niet worden gelezen (voorbeelden: {}). Hun camera's blijven in de scène, maar de training kan mislukken wanneer ze worden gebruikt.",
+  "training.unreadable_image": "Een trainingsafbeelding kon niet worden gelezen. Open Details voor het bestand en de decoderfout.",
   "training.reset_before_strategy_change": "Reset de training voordat u de strategie wijzigt.",
+  "io.mesh_no_triangle_faces": "Het meshbestand bevat geen driehoekige vlakken.",
   "io.no_finite_seed_points": "De puntenwolk bevat geen beginpunten met eindige coördinaten. Er wordt willekeurige initialisatie gebruikt.",
+  "io.dataset_camera_invalid_focal": "{} datasetcamera('s) met een nul, negatieve of niet-eindige brandpuntsafstand overgeslagen (voorbeelden: {}).",
+  "io.dataset_camera_no_valid_focal": "Geen enkele datasetcamera heeft een geldige brandpuntsafstand. Controleer de camerakalibratie en laad de dataset opnieuw.",
+  "io.mesh_nonfinite_vertices": "De mesh bevat niet-eindige hoekpuntcoördinaten.",
+  "io.colmap_skipped_invalid_pose": "Bij de COLMAP-import zijn afbeeldingen met een ongeldige pose overgeslagen (aantal: {}; voorbeelden: {} [{}])",
   "ui.vram_window_1m": "1 min",
   "ui.vram_process_nvml_tooltip": "GPU-geheugen van het proces volgens het besturingssysteem of GPU-stuurprogramma.",
   "ui.vram_process_unavailable_tooltip": "GPU-geheugen van het proces is niet beschikbaar. Het apparaatgebruik omvat andere toepassingen.",
@@ -1012,6 +1021,11 @@
     "reset_section_success": "Sectie onmiddellijk gereset.",
     "reset_section_failed": "Instellingen kunnen niet worden gereset.",
     "ui_preferences_save_failed": "De interfacevoorkeuren konden niet worden opgeslagen.",
+    "ui_preferences_backup_title": "Back-up van interface-instellingen gemaakt",
+    "ui_preferences_backup_message": "Beschadigde interface-instellingen zijn vóór vervanging naast ui_preferences.json opgeslagen.",
+    "legacy_layout_backup_message": "Beschadigde oude indelingsinstellingen zijn naast layout.json opgeslagen. Andere interface-instellingen zijn geladen.",
+    "legacy_settings_conflict_title": "Oude instellingen staan apart",
+    "legacy_settings_conflict_message": "Na de migratie zijn instellingen gevonden die door een oudere versie zijn geschreven. De huidige instellingen zijn behouden; wijzigingen in de oudere versie worden niet automatisch gesynchroniseerd.",
     "reset_all_settings": "Alle instellingen resetten",
     "reset_all_settings_confirmation": "Taal, thema, UI-schaal, scènereconstructie, invoervoorkeuren, MCP-server, indeling en vensterstatus naar de standaardwaarden herstellen? Dit wordt onmiddellijk toegepast. Als een .licht-project open is, wordt de opgeslagen indeling bij de volgende opslag vervangen; projectinhoud, datasets, exports, plugins en cache blijven ongewijzigd.",
     "reset_all_settings_success": "Alle voorkeuren, de indeling en de vensterstatus zijn onmiddellijk gereset.",
@@ -1489,10 +1503,15 @@
     "file": "bestand",
     "items": "items",
     "and_more": "... en",
+    "and_more_in_log": "... en nog {} (volledige lijst in het logboek)",
     "cannot_open": "Kan niet openen"
   },
   "file_drop": {
-    "blocked_during_training": "Stop de training voordat je een nieuwe scène laadt."
+    "drop_video_project_separately": "Zet video's en projecten afzonderlijk neer. De vermelde items zijn niet geopend.",
+    "supported_formats_detail": "Ondersteunde formaten: .licht, .ply, .sog, .ssog, lod-meta.json, .spz, .rad, .usd, .usda, .usdc, .usdz, .obj, .fbx, .gltf, .glb, .stl, .dae, .hdr, .exr, .json, .resume, {} of datasetmappen",
+    "blocked_during_training": "Stop de training voordat je een nieuwe scène laadt.",
+    "cancelled_by_new_project": "De actie Nieuw project heeft deze bestandsplaatsing geannuleerd. Zet het bestand opnieuw neer om het te laden.",
+    "cancelled_by_project_switch": "Het neergezette bestand is niet geladen omdat een projectbewerking is gestart. Zet het opnieuw neer om het te laden."
   },
   "export_dialog": {
     "folder_name": "Mapnaam",
@@ -1544,12 +1563,23 @@
     "status_label": "Status: %s"
   },
   "input_settings": {
+    "mouse_back": "Muisknop Terug",
+    "mouse_forward": "Muisknop Vooruit",
+    "invalid_profile_name": "Ongeldige profielnaam. Gebruik een eenvoudige naam zonder padscheidingstekens of gereserveerde tekens.",
+    "profile_save_failed": "Het invoerprofiel kon niet worden opgeslagen.",
+    "invalid_binding": "Deze sneltoets kan niet voor deze actie worden gebruikt.",
+    "damaged_profile_backed_up": "Een beschadigde toetsenindeling is vóór het opslaan bewaard. Het oorspronkelijke bestand staat naast het profiel.",
+    "invalid_entries_skipped": "Overgeslagen en bewaarde toetsindelingen op posities vanaf 1: ",
+    "newer_profile_unchanged": "Deze toetsindeling is met een nieuwere versie opgeslagen. Ze is niet geladen of gewijzigd.",
+    "core_actions_unreachable": "Sommige belangrijke sneltoetsen in deze indeling werken niet. U kunt alleen die acties herstellen.",
+    "restore_core_actions": "Standaardinstellingen voor deze acties herstellen",
     "active_profile": "Actief Profiel",
     "save_current_profile": "Huidig Profiel Opslaan",
     "reset_to_default": "Reset naar Standaard",
     "export": "Exporteren...",
     "import": "Importeren...",
     "rebind": "Opnieuw toewijzen",
+    "clear_binding": "Wissen",
     "cancel": "Annuleren",
     "replace": "Vervangen",
     "conflict_title": "Toewijzing vervangen?",
@@ -1569,6 +1599,7 @@
     "click_again_double": "Klik nogmaals voor dubbelklik...",
     "tool_mode": "Gereedschapsmodus",
     "select_tool_mode": "Selecteer gereedschap modus om toewijzingen te bekijken/bewerken",
+    "altgr_capture_unsupported": "AltGr-sneltoetsen kunnen niet worden vastgelegd. Gebruik een sneltoets zonder AltGr.",
     "global_bindings_hint": "Globale toewijzingen gelden overal tenzij overschreven",
     "tool_bindings_hint": "Gereedschap-specifieke toewijzingen overschrijven globale toewijzingen",
     "section.navigation": "NAVIGATIE",
@@ -1835,6 +1866,9 @@
     "supported_by": "Ondersteund door",
     "click_to_continue": "Klik ergens om door te gaan",
     "loaded_plugins": "Opstartplugins geladen {}/{}",
+    "plugin_invalid_manifest": "Opstartplugin {} is niet beschikbaar: ongeldig manifest",
+    "plugin_incompatible_api": "Opstartplugin {} kan niet worden geladen: plugin-API-versie komt niet overeen",
+    "plugin_load_failed": "Opstartplugin {} kon niet worden geladen",
     "drop_files_title": "Sleep bestanden hierheen om te beginnen",
     "drop_files_subtitle": "PLY, SOG, SSOG, SPZ, GLB, RAD, USD, COLMAP dataset of Projectbestand",
     "drop_files_hint": "Of gebruik {path}",
@@ -2164,6 +2198,12 @@
       "updated": "{name} bijgewerkt"
     },
     "title_line": "Bekijk installeerbare plug-ins uit het plugin-register.",
+    "success_with_warning": "{success} {warning}",
+    "warning.unverified_source": "Waarschuwing: deze pluginbron heeft geen SHA-256-digest; het archief is niet geverifieerd.",
+    "error.checksum_mismatch": "SHA-256-verificatie van het pluginarchief is mislukt.",
+    "error.digest_conflict": "De URL-digest en het sha256-argument komen niet overeen.",
+    "error.invalid_digest": "De SHA-256-digest moet precies 64 hexadecimale tekens bevatten.",
+    "error.digest_requires_archive": "Voor SHA-256-verificatie is installatie via een archief vereist.",
     "warning_body": "WAARSCHUWING: LFS keurt niet direct goed en neemt geen verantwoordelijkheid. Gebruik op eigen risico.",
     "filter_label": "Filter",
     "sort_label": "Sorteren op",
@@ -2539,6 +2579,8 @@
     "perf_enable_tracking": "Inschakelen",
     "perf_expand": "Uitklappen",
     "perf_collapse": "Inklappen",
+    "gt_metrics_training_required": "Camerametrieken vereisen een geïnitialiseerde trainingssessie.",
+    "gt_metrics_calculation_failed": "Metrieken voor deze weergave konden niet worden berekend.",
     "perf_hud_tooltip": "Prestatie-HUD tonen of verbergen"
   },
   "runtime": {
@@ -2603,6 +2645,9 @@
     "export_cancelled": "Export geannuleerd door gebruiker",
     "no_splat_data": "Geen splat-gegevens om te exporteren",
     "export_streamed_lod": "Kan \"{}\" niet exporteren: het model is te groot voor het geheugen en wordt vanaf de schijf gestreamd.",
+    "export_extension_required": "De bestandsnaam voor export moet eindigen op {}.",
+    "export_extension_warning": "De geëxporteerde {}-gegevens hebben niet de gebruikelijke extensie. Andere apps herkennen het bestand mogelijk niet.",
+    "export_sh_degree_clamped": "De gevraagde SH-graad is voor de geselecteerde modellen beperkt tot {}.",
     "video_encoder_unavailable": "Video-encoder niet beschikbaar",
     "scene_manager_unavailable": "Scènebeheerder is niet beschikbaar",
     "no_model_selected": "Geen model geselecteerd om te exporteren",
@@ -2666,6 +2711,7 @@
     "edge_off_help": "Rand van 1 naar 2 langs X: UIT. Zet het vlak waterpas zonder de extra draai."
   },
   "toast": {
+    "camera_training_next_run": "Camerawijzigingen gelden vanaf de volgende training. De huidige training blijft de bestaande beelden gebruiken.",
     "trainer_not_restored": {
       "title": "Trainer niet hersteld",
       "message": "Het projectmodel is beschikbaar om te bekijken, maar training kon niet worden hervat. Controleer het datasetpad en de logboeken."
@@ -3126,5 +3172,8 @@
   "runtime.import_batch_failed.other": "{} bestanden zijn niet geladen",
   "runtime.import_out_of_memory": "Onvoldoende GPU-geheugen",
   "runtime.import_batch_kept": "De overige bestanden zijn geladen en blijven beschikbaar in de scène.",
-  "runtime.import_render_failed": "Dit bestand kon niet worden voorbereid voor weergave"
+  "runtime.import_render_failed": "Dit bestand kon niet worden voorbereid voor weergave",
+  "training.iterations_must_exceed_current": "Het maximale aantal iteraties moet hoger zijn dan de huidige trainingsstap.",
+  "runtime.camera_fov_out_of_range": "fov_degrees moet eindig zijn, groter dan 0 en kleiner dan 180 graden",
+  "runtime.camera_fov_clamped": "De aangevraagde fov_degrees is begrensd op {:.2f} graden"
 }

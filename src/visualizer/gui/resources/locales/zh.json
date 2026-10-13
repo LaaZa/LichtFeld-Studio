@@ -1,6 +1,15 @@
 {
+  "io.mask_decode_failed": "无法解码遮罩",
+  "io.dataset_image_unreadable_one": "无法读取数据集图像“{}”。对应的相机仍保留在场景中，但使用该图像时训练可能失败。",
+  "io.dataset_image_unreadable_many": "无法读取 {} 张数据集图像（例如：{}）。对应的相机仍保留在场景中，但使用这些图像时训练可能失败。",
+  "training.unreadable_image": "无法读取训练图像。打开“详细信息”查看文件和解码器错误。",
   "training.reset_before_strategy_change": "更改策略前请重置训练。",
+  "io.mesh_no_triangle_faces": "网格文件不包含三角形面。",
   "io.no_finite_seed_points": "点云中没有坐标为有限值的初始点。将使用随机初始化。",
+  "io.dataset_camera_invalid_focal": "已跳过 {} 个焦距为零、负数或非有限值的数据集相机（示例：{}）。",
+  "io.dataset_camera_no_valid_focal": "数据集中没有焦距有效的相机。请检查相机标定值并重新加载数据集。",
+  "io.mesh_nonfinite_vertices": "网格包含非有限顶点坐标。",
+  "io.colmap_skipped_invalid_pose": "COLMAP 导入跳过了 {} 张姿态无效的图像（抽样 {} 张：{}）",
   "ui.vram_window_1m": "1 分钟",
   "ui.vram_process_nvml_tooltip": "操作系统或 GPU 驱动程序报告的进程 GPU 内存。",
   "ui.vram_process_unavailable_tooltip": "无法获取进程 GPU 内存。设备使用量包括其他应用程序。",
@@ -1012,6 +1021,11 @@
     "reset_section_success": "此部分已立即重置。",
     "reset_section_failed": "无法重置设置。",
     "ui_preferences_save_failed": "无法保存界面偏好设置。",
+    "ui_preferences_backup_title": "已创建界面设置备份",
+    "ui_preferences_backup_message": "替换前已将损坏的界面设置备份到 ui_preferences.json 旁。",
+    "legacy_layout_backup_message": "已将损坏的旧版布局设置备份到 layout.json 旁。其他界面设置已加载。",
+    "legacy_settings_conflict_title": "旧版设置单独保存",
+    "legacy_settings_conflict_message": "发现旧版本在迁移后写入的设置。当前设置已保留；旧版本中的更改不会自动同步。",
     "reset_all_settings": "重置所有设置",
     "reset_all_settings_confirmation": "将语言、主题、界面缩放、场景重建、输入偏好、MCP 服务器、布局和窗口状态恢复为默认值？将立即应用。如果当前打开了 .licht 项目，下次保存时将替换其已存储的布局；项目内容、数据集、导出、插件和缓存不会受到影响。",
     "reset_all_settings_success": "所有偏好、布局和窗口状态已立即重置。",
@@ -1489,10 +1503,15 @@
     "file": "文件",
     "items": "项目",
     "and_more": "... 和",
+    "and_more_in_log": "……以及另外 {} 项（完整列表见日志）",
     "cannot_open": "无法打开"
   },
   "file_drop": {
-    "blocked_during_training": "请先停止训练，再加载新场景。"
+    "drop_video_project_separately": "请分别拖放视频和项目。列出的项目未被打开。",
+    "supported_formats_detail": "支持的格式：.licht, .ply, .sog, .ssog, lod-meta.json, .spz, .rad, .usd, .usda, .usdc, .usdz, .obj, .fbx, .gltf, .glb, .stl, .dae, .hdr, .exr, .json, .resume, {}，或数据集目录",
+    "blocked_during_training": "请先停止训练，再加载新场景。",
+    "cancelled_by_new_project": "“新建项目”操作取消了此次文件拖放。请再次拖放该文件以加载。",
+    "cancelled_by_project_switch": "由于启动了项目操作，拖放的文件未加载。请再次拖放该文件以加载。"
   },
   "export_dialog": {
     "folder_name": "文件夹名称",
@@ -1544,12 +1563,23 @@
     "status_label": "状态：%s"
   },
   "input_settings": {
+    "mouse_back": "鼠标后退键",
+    "mouse_forward": "鼠标前进键",
+    "invalid_profile_name": "配置文件名称无效。请使用不含路径分隔符或保留字符的简单名称。",
+    "profile_save_failed": "无法保存输入配置文件。",
+    "invalid_binding": "此快捷键不能用于该操作。",
+    "damaged_profile_backed_up": "保存前已备份损坏的按键映射。原始文件保存在配置文件旁边。",
+    "invalid_entries_skipped": "已跳过并保留的按键映射项位置（从 1 开始）：",
+    "newer_profile_unchanged": "此按键映射由较新版本保存，未加载或更改。",
+    "core_actions_unreachable": "此按键映射中的部分重要快捷键无法使用。您可以仅恢复这些操作。",
+    "restore_core_actions": "恢复这些操作的默认设置",
     "active_profile": "活动配置文件",
     "save_current_profile": "保存当前配置文件",
     "reset_to_default": "重置为默认",
     "export": "导出...",
     "import": "导入...",
     "rebind": "重新绑定",
+    "clear_binding": "清除",
     "cancel": "取消",
     "replace": "替换",
     "conflict_title": "替换绑定？",
@@ -1569,6 +1599,7 @@
     "click_again_double": "再次点击以双击...",
     "tool_mode": "工具模式",
     "select_tool_mode": "选择工具模式以查看/编辑绑定",
+    "altgr_capture_unsupported": "无法捕获 AltGr 快捷键。请使用不含 AltGr 的快捷键。",
     "global_bindings_hint": "全局绑定在所有地方都适用，除非被覆盖",
     "tool_bindings_hint": "工具特定的绑定会覆盖全局绑定",
     "section.navigation": "导航",
@@ -1835,6 +1866,9 @@
     "supported_by": "支持：",
     "click_to_continue": "点击任意位置继续",
     "loaded_plugins": "已加载启动插件 {}/{}",
+    "plugin_invalid_manifest": "启动插件 {} 不可用：清单无效",
+    "plugin_incompatible_api": "无法加载启动插件 {}：插件 API 版本不匹配",
+    "plugin_load_failed": "无法加载启动插件 {}",
     "drop_files_title": "将文件拖放到此处开始",
     "drop_files_subtitle": "PLY、SOG、SPZ、GLB、RAD、USD、COLMAP数据集或项目文件",
     "drop_files_hint": "或使用 {path}",
@@ -2164,6 +2198,12 @@
       "updated": "已更新 {name}"
     },
     "title_line": "浏览可从插件源安装的插件",
+    "success_with_warning": "{success} {warning}",
+    "warning.unverified_source": "警告：此插件来源没有 SHA-256 摘要；其归档文件未经验证。",
+    "error.checksum_mismatch": "插件归档文件的 SHA-256 验证失败。",
+    "error.digest_conflict": "URL 摘要与 sha256 参数不匹配。",
+    "error.invalid_digest": "SHA-256 摘要必须恰好包含 64 个十六进制字符。",
+    "error.digest_requires_archive": "SHA-256 验证需要使用归档安装方式。",
     "warning_body": "警告：LFS 不直接背书也不承担责任。使用风险自负",
     "filter_label": "筛选",
     "sort_label": "排序方式",
@@ -2539,6 +2579,8 @@
     "perf_enable_tracking": "启用",
     "perf_expand": "展开",
     "perf_collapse": "折叠",
+    "gt_metrics_training_required": "相机指标需要已初始化的训练会话。",
+    "gt_metrics_calculation_failed": "无法计算此视图的指标。",
     "perf_hud_tooltip": "显示或隐藏性能 HUD"
   },
   "runtime": {
@@ -2603,6 +2645,9 @@
     "export_cancelled": "用户已取消导出",
     "no_splat_data": "没有可导出的 splat 数据",
     "export_streamed_lod": "无法导出“{}”：模型太大，无法装入内存，正在从磁盘流式加载。",
+    "export_extension_required": "导出文件名必须以 {} 结尾。",
+    "export_extension_warning": "导出的 {} 数据文件没有常用扩展名，其他应用可能无法识别。",
+    "export_sh_degree_clamped": "所请求的 SH 阶数已针对所选模型限制为 {}。",
     "video_encoder_unavailable": "视频编码器不可用",
     "scene_manager_unavailable": "场景管理器不可用",
     "no_model_selected": "未选择要导出的模型",
@@ -2666,6 +2711,7 @@
     "edge_off_help": "点1到点2的边沿X方向：关。只将平面调平，不做额外旋转。"
   },
   "toast": {
+    "camera_training_next_run": "相机更改将在下一次训练时生效。当前训练仍使用原来的图像。",
     "trainer_not_restored": {
       "title": "未能恢复训练器",
       "message": "项目模型可供查看，但无法恢复训练。请检查数据集路径和日志。"
@@ -3126,5 +3172,8 @@
   "runtime.import_batch_failed.other": "有 {} 个文件未能加载",
   "runtime.import_out_of_memory": "GPU 显存不足",
   "runtime.import_batch_kept": "其他文件已加载，仍可在场景中使用。",
-  "runtime.import_render_failed": "无法准备此文件以进行渲染"
+  "runtime.import_render_failed": "无法准备此文件以进行渲染",
+  "training.iterations_must_exceed_current": "最大迭代次数必须大于当前训练步数。",
+  "runtime.camera_fov_out_of_range": "fov_degrees 必须是有限值，且大于 0 度、小于 180 度",
+  "runtime.camera_fov_clamped": "请求的 fov_degrees 已限制为 {:.2f} 度"
 }

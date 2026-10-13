@@ -1,6 +1,15 @@
 {
+  "io.mask_decode_failed": "Impossible de décoder le masque",
+  "io.dataset_image_unreadable_one": "Impossible de lire l’image '{}' du jeu de données. Sa caméra reste dans la scène, mais son utilisation peut faire échouer l’entraînement.",
+  "io.dataset_image_unreadable_many": "Impossible de lire {} images du jeu de données (exemples : {}). Leurs caméras restent dans la scène, mais leur utilisation peut faire échouer l’entraînement.",
+  "training.unreadable_image": "Une image d’entraînement n’a pas pu être lue. Ouvrez Détails pour voir le fichier et l’erreur du décodeur.",
   "training.reset_before_strategy_change": "Réinitialisez l’entraînement avant de changer de stratégie.",
+  "io.mesh_no_triangle_faces": "Le fichier de maillage ne contient aucune face triangulaire.",
   "io.no_finite_seed_points": "Le nuage de points ne contient aucun point initial fini. Une initialisation aléatoire sera utilisée.",
+  "io.dataset_camera_invalid_focal": "{} caméra(s) du jeu de données ont été ignorées car leur focale est nulle, négative ou non finie (exemples : {}).",
+  "io.dataset_camera_no_valid_focal": "Aucune caméra du jeu de données n’a une focale valide. Vérifiez l’étalonnage des caméras et rechargez le jeu de données.",
+  "io.mesh_nonfinite_vertices": "Le maillage contient des coordonnées de sommets non finies.",
+  "io.colmap_skipped_invalid_pose": "L’import COLMAP a ignoré des images dont la pose est invalide (nombre : {} ; exemples : {} [{}])",
   "ui.vram_window_1m": "1 min",
   "ui.vram_process_nvml_tooltip": "Mémoire GPU du processus indiquée par le système ou le pilote GPU.",
   "ui.vram_process_unavailable_tooltip": "La mémoire GPU du processus est indisponible. L’utilisation du périphérique inclut les autres applications.",
@@ -1012,6 +1021,11 @@
     "reset_section_success": "Section réinitialisée immédiatement.",
     "reset_section_failed": "Impossible de réinitialiser les paramètres.",
     "ui_preferences_save_failed": "Impossible d’enregistrer les préférences de l’interface.",
+    "ui_preferences_backup_title": "Sauvegarde des réglages d’interface créée",
+    "ui_preferences_backup_message": "Les réglages d’interface endommagés ont été sauvegardés près de ui_preferences.json avant leur remplacement.",
+    "legacy_layout_backup_message": "Une copie des anciens réglages de disposition endommagés a été conservée à côté de layout.json. Les autres réglages de l’interface ont été chargés.",
+    "legacy_settings_conflict_title": "Les anciens réglages sont séparés",
+    "legacy_settings_conflict_message": "Des réglages écrits par une ancienne version après la migration ont été trouvés. Les réglages actuels ont été conservés ; les modifications de l’ancienne version ne seront pas synchronisées automatiquement.",
     "reset_all_settings": "Réinitialiser tous les paramètres",
     "reset_all_settings_confirmation": "Rétablir la langue, le thème, l'échelle de l'interface, la reconstruction de la scène, les préférences de saisie, le serveur MCP, la disposition et l'état de la fenêtre à leurs valeurs par défaut ? Cela s'applique immédiatement. Si un projet .licht est ouvert, sa disposition enregistrée sera remplacée au prochain enregistrement ; le contenu du projet, les jeux de données, les exportations, les plugins et le cache ne sont pas affectés.",
     "reset_all_settings_success": "Toutes les préférences, la disposition et l'état de la fenêtre ont été réinitialisés immédiatement.",
@@ -1489,10 +1503,15 @@
     "file": "fichier",
     "items": "éléments",
     "and_more": "... et",
+    "and_more_in_log": "... et {} autres (liste complète dans le journal)",
     "cannot_open": "Impossible d'ouvrir"
   },
   "file_drop": {
-    "blocked_during_training": "Arrêtez l'entraînement avant de charger une nouvelle scène."
+    "drop_video_project_separately": "Déposez les vidéos et les projets séparément. Les éléments répertoriés n'ont pas été ouverts.",
+    "supported_formats_detail": "Formats pris en charge : .licht, .ply, .sog, .ssog, lod-meta.json, .spz, .rad, .usd, .usda, .usdc, .usdz, .obj, .fbx, .gltf, .glb, .stl, .dae, .hdr, .exr, .json, .resume, {} ou répertoires de jeux de données",
+    "blocked_during_training": "Arrêtez l'entraînement avant de charger une nouvelle scène.",
+    "cancelled_by_new_project": "L’action Nouveau projet a annulé ce dépôt de fichier. Déposez à nouveau le fichier pour le charger.",
+    "cancelled_by_project_switch": "Le fichier déposé n’a pas été chargé, car une opération sur le projet a commencé. Déposez-le à nouveau pour le charger."
   },
   "export_dialog": {
     "folder_name": "Nom du dossier",
@@ -1544,12 +1563,23 @@
     "status_label": "Statut : %s"
   },
   "input_settings": {
+    "mouse_back": "Bouton Retour de la souris",
+    "mouse_forward": "Bouton Avancer de la souris",
+    "invalid_profile_name": "Nom de profil invalide. Utilisez un nom simple sans séparateur de chemin ni caractère réservé.",
+    "profile_save_failed": "Impossible d’enregistrer le profil de saisie.",
+    "invalid_binding": "Ce raccourci ne peut pas être utilisé pour cette action.",
+    "damaged_profile_backed_up": "Une configuration de touches endommagée a été sauvegardée avant l’enregistrement. Le fichier original est conservé à côté du profil.",
+    "invalid_entries_skipped": "Entrées du mappage des touches ignorées et conservées aux positions à partir de 1 : ",
+    "newer_profile_unchanged": "Cette configuration des touches provient d’une version plus récente. Elle n’a été ni chargée ni modifiée.",
+    "core_actions_unreachable": "Certains raccourcis essentiels de cette configuration sont inutilisables. Vous pouvez restaurer uniquement ces actions.",
+    "restore_core_actions": "Rétablir les raccourcis par défaut pour ces actions",
     "active_profile": "Profil Actif",
     "save_current_profile": "Sauvegarder le Profil Actuel",
     "reset_to_default": "Réinitialiser par Défaut",
     "export": "Exporter...",
     "import": "Importer...",
     "rebind": "Réassigner",
+    "clear_binding": "Effacer",
     "cancel": "Annuler",
     "replace": "Remplacer",
     "conflict_title": "Remplacer la liaison ?",
@@ -1569,6 +1599,7 @@
     "click_again_double": "Cliquez à nouveau pour double-clic...",
     "tool_mode": "Mode Outil",
     "select_tool_mode": "Sélectionnez le mode outil pour voir/éditer les liaisons",
+    "altgr_capture_unsupported": "Les raccourcis AltGr ne peuvent pas être capturés. Utilisez un raccourci sans AltGr.",
     "global_bindings_hint": "Les liaisons globales s'appliquent partout sauf si remplacées",
     "tool_bindings_hint": "Les liaisons spécifiques aux outils remplacent les liaisons globales",
     "section.navigation": "NAVIGATION",
@@ -1835,6 +1866,9 @@
     "supported_by": "Soutenu par",
     "click_to_continue": "Cliquez n'importe où pour continuer",
     "loaded_plugins": "Plugins de démarrage chargés {}/{}",
+    "plugin_invalid_manifest": "Le plugin de démarrage {} est indisponible : manifeste invalide",
+    "plugin_incompatible_api": "Le plugin de démarrage {} ne peut pas être chargé : version de l’API incompatible",
+    "plugin_load_failed": "Échec du chargement du plugin de démarrage {}",
     "drop_files_title": "Déposez des fichiers ici pour commencer",
     "drop_files_subtitle": "PLY, SOG, SSOG, SPZ, GLB, RAD, USD, dataset COLMAP ou fichier de projet",
     "drop_files_hint": "Ou utilisez {path}",
@@ -2164,6 +2198,12 @@
       "updated": "{name} mis à jour"
     },
     "title_line": "Parcourez les plugins installables depuis le registre de plugins.",
+    "success_with_warning": "{success} {warning}",
+    "warning.unverified_source": "Avertissement : cette source de plugin n'a pas d'empreinte SHA-256 ; son archive n'est pas vérifiée.",
+    "error.checksum_mismatch": "La vérification SHA-256 de l'archive du plugin a échoué.",
+    "error.digest_conflict": "L'empreinte de l'URL et l'argument sha256 ne correspondent pas.",
+    "error.invalid_digest": "L'empreinte SHA-256 doit contenir exactement 64 caractères hexadécimaux.",
+    "error.digest_requires_archive": "La vérification SHA-256 nécessite le mode d'installation par archive.",
     "warning_body": "AVERTISSEMENT : LFS n'approuve pas directement et n'assume aucune responsabilité. Utilisation à vos risques.",
     "filter_label": "Filtre",
     "sort_label": "Trier par",
@@ -2539,6 +2579,8 @@
     "perf_enable_tracking": "Activer",
     "perf_expand": "Développer",
     "perf_collapse": "Réduire",
+    "gt_metrics_training_required": "Les métriques de caméra nécessitent une session d’entraînement initialisée.",
+    "gt_metrics_calculation_failed": "Impossible de calculer les métriques de cette vue.",
     "perf_hud_tooltip": "Afficher ou masquer le HUD de performances"
   },
   "runtime": {
@@ -2603,6 +2645,9 @@
     "export_cancelled": "Exportation annulée par l’utilisateur",
     "no_splat_data": "Aucune donnée de splats à exporter",
     "export_streamed_lod": "Impossible d'exporter \"{}\" : le modèle est trop volumineux pour tenir en mémoire et est lu en continu depuis le disque.",
+    "export_extension_required": "Le nom du fichier d'exportation doit se terminer par {}.",
+    "export_extension_warning": "Les données {} exportées n'ont pas leur extension habituelle. D'autres applications risquent de ne pas les reconnaître.",
+    "export_sh_degree_clamped": "Le degré SH demandé a été limité à {} pour les modèles sélectionnés.",
     "video_encoder_unavailable": "Encodeur vidéo indisponible",
     "scene_manager_unavailable": "Le gestionnaire de scènes est indisponible",
     "no_model_selected": "Aucun modèle sélectionné pour l’exportation",
@@ -2666,6 +2711,7 @@
     "edge_off_help": "Bord de 1 à 2 selon X : NON. Met le plan à niveau sans rotation supplémentaire."
   },
   "toast": {
+    "camera_training_next_run": "Les changements de caméra s’appliqueront au prochain entraînement. L’entraînement en cours conserve ses images actuelles.",
     "trainer_not_restored": {
       "title": "Entraîneur non restauré",
       "message": "Le modèle du projet est disponible pour la visualisation, mais l'entraînement n'a pas pu être repris. Vérifiez le chemin du jeu de données et les journaux."
@@ -3126,5 +3172,8 @@
   "runtime.import_batch_failed.other": "{} fichiers n’ont pas été chargés",
   "runtime.import_out_of_memory": "Mémoire GPU insuffisante",
   "runtime.import_batch_kept": "Les autres fichiers ont été chargés et restent disponibles dans la scène.",
-  "runtime.import_render_failed": "Impossible de préparer ce fichier pour l’affichage"
+  "runtime.import_render_failed": "Impossible de préparer ce fichier pour l’affichage",
+  "training.iterations_must_exceed_current": "Le nombre maximal d’itérations doit dépasser l’étape d’entraînement actuelle.",
+  "runtime.camera_fov_out_of_range": "fov_degrees doit être fini, supérieur à 0 et inférieur à 180 degrés",
+  "runtime.camera_fov_clamped": "La valeur fov_degrees demandée a été limitée à {:.2f} degrés"
 }

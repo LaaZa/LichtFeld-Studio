@@ -24,6 +24,8 @@
 #include "window/vulkan_result.hpp"
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include "core/legacy_settings_migration.hpp"
+#include "core/persisted_settings.hpp"
 #include "core/tensor.hpp"
 #include "core/user_paths.hpp"
 #include "gui/bounds_gizmo.hpp"
@@ -360,11 +362,8 @@ namespace lfs::vis::gui {
             const int mods = input::sdlModsToAppMods(input.key_mods);
             for (const SDL_Scancode scancode : input.keys_pressed) {
                 const int physical_key = input::sdlScancodeToAppKey(scancode);
-                int logical_key = input::sdlKeycodeToAppKey(
-                    SDL_GetKeyFromScancode(scancode, SDL_KMOD_NONE, false));
-                if (logical_key == input::KEY_UNKNOWN) {
-                    logical_key = physical_key;
-                }
+                const int logical_key = input::sdlShortcutKeyToAppKey(
+                    scancode, SDL_GetKeyFromScancode(scancode, SDL_KMOD_NONE, false));
 
                 bindings.captureKey(physical_key, logical_key, mods);
                 if (!bindings.isCapturing())
@@ -3739,16 +3738,22 @@ namespace lfs::vis::gui {
                 return std::nullopt;
             }
             try {
-                std::ifstream file(paths->windowStateFile());
-                const auto json = nlohmann::json::parse(file);
+                const auto json = lfs::core::persisted_settings::readObject(paths->windowStateFile());
                 WindowManager::PersistentWindowState state;
-                state.x = json.value("x", state.x);
-                state.y = json.value("y", state.y);
-                state.width = json.value("width", state.width);
-                state.height = json.value("height", state.height);
-                state.maximized = json.value("maximized", state.maximized);
-                if (state.width <= 0 || state.height <= 0)
-                    return std::nullopt;
+                const WindowManager::PersistentWindowState defaults;
+                state.x = lfs::core::persisted_settings::field(json, "x", state.x);
+                state.y = lfs::core::persisted_settings::field(json, "y", state.y);
+                state.width = lfs::core::persisted_settings::field(json, "width", state.width);
+                state.height = lfs::core::persisted_settings::field(json, "height", state.height);
+                state.maximized = lfs::core::persisted_settings::field(json, "maximized", state.maximized);
+                if (state.width <= 0) {
+                    LOG_WARN("Invalid saved window width; using its default");
+                    state.width = defaults.width;
+                }
+                if (state.height <= 0) {
+                    LOG_WARN("Invalid saved window height; using its default");
+                    state.height = defaults.height;
+                }
                 return state;
             } catch (const std::exception& error) {
                 LOG_WARN("Unable to load window state: {}", error.what());
@@ -3765,16 +3770,56 @@ namespace lfs::vis::gui {
                          lfs::format_for_developer(paths.error()));
                 return;
             }
-            const nlohmann::json json = {
+            const nlohmann::json updates = {
                 {"x", state.x},
                 {"y", state.y},
                 {"width", state.width},
                 {"height", state.height},
                 {"maximized", state.maximized},
             };
-            if (const auto result = paths->writeWindowStateAtomically(json.dump(2) + '\n'); !result)
-                LOG_WARN("Unable to save window state: {}",
-                         lfs::format_for_developer(result.error()));
+            try {
+                const auto path = paths->windowStateFile();
+                std::error_code error;
+                if (std::filesystem::exists(path, error)) {
+                    std::optional<nlohmann::json> old;
+                    try {
+                        old = lfs::core::persisted_settings::readObject(path);
+                    } catch (const std::exception&) {
+                        // LFS-CENSUS-OK(empty-catch): mergeForWrite backs up unreadable files.
+                    }
+                    if (old) {
+                        const auto invalid_range = [&old](const char* key, bool positive) {
+                            if (!old->contains(key) || !(*old)[key].is_number_integer())
+                                return false;
+                            try {
+                                if ((*old)[key].is_number_unsigned() &&
+                                    (*old)[key].get<std::uint64_t>() > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+                                    return true;
+                                if (!(*old)[key].is_number_unsigned()) {
+                                    const auto number = (*old)[key].get<std::int64_t>();
+                                    if (number < std::numeric_limits<int>::min() ||
+                                        number > std::numeric_limits<int>::max())
+                                        return true;
+                                }
+                                return positive && (*old)[key].get<int>() <= 0;
+                            } catch (const std::exception&) {
+                                // LFS-CENSUS-OK(empty-catch): an out-of-range coordinate needs a backup.
+                                return true;
+                            }
+                        };
+                        if (invalid_range("x", false) || invalid_range("y", false) ||
+                            invalid_range("width", true) || invalid_range("height", true))
+                            lfs::core::persisted_settings::backupDamaged(path, paths->backupDir());
+                    }
+                }
+                const auto json = lfs::core::persisted_settings::mergeForWrite(
+                    path, updates, "schema_version", 1, nullptr, {}, paths->backupDir());
+                if (const auto result = paths->writeWindowStateAtomically(json.dump(2) + '\n'); !result)
+                    LOG_WARN("Unable to save window state: {}",
+                             lfs::format_for_developer(result.error()));
+            } catch (const std::exception& error) {
+                LOG_WARN("Unable to save window state: {}", error.what());
+            }
         }
     } // namespace
 
@@ -4538,6 +4583,19 @@ namespace lfs::vis::gui {
                 }
             }
         }
+
+        if (LayoutState::takeLegacyLayoutBackupNotice())
+            enqueueToast(ToastRequest{
+                .title = LOC("preferences.ui_preferences_backup_title"),
+                .message = LOC("preferences.legacy_layout_backup_message"),
+                .level = ErrorNoticeLevel::Warning,
+            });
+        if (lfs::core::takeLegacySettingsMigrationNotice())
+            enqueueToast(ToastRequest{
+                .title = LOC("preferences.legacy_settings_conflict_title"),
+                .message = LOC("preferences.legacy_settings_conflict_message"),
+                .level = ErrorNoticeLevel::Warning,
+            });
 
         float saved_scale = lfs::vis::loadUiScalePreference();
         if (saved_scale <= 0.0f)
@@ -5367,6 +5425,11 @@ namespace lfs::vis::gui {
             auto mesh_frame = rendering_manager->getVulkanMeshFrame();
             params.mesh_view_projection = mesh_frame.view_projection;
             params.mesh_camera_position = mesh_frame.camera_position;
+            params.mesh_camera_backward = mesh_frame.camera_backward;
+            params.mesh_depth_view = mesh_frame.depth_view;
+            params.mesh_depth_view_min = mesh_frame.depth_view_min;
+            params.mesh_depth_view_max = mesh_frame.depth_view_max;
+            params.mesh_depth_grayscale = mesh_frame.depth_grayscale;
             params.mesh_items = std::move(mesh_frame.items);
             params.mesh_panels = std::move(mesh_frame.panels);
             params.environment = std::move(mesh_frame.environment);
@@ -6818,6 +6881,12 @@ namespace lfs::vis::gui {
                 gt_metrics_config.visible = true;
                 gt_metrics_config.show_ssim =
                     settings.camera_metrics_mode == RenderSettings::CameraMetricsMode::PSNRSSIM;
+                const auto* const trainer_manager = viewer_ ? viewer_->getTrainerManager() : nullptr;
+                const auto* const trainer = trainer_manager ? trainer_manager->getTrainer() : nullptr;
+                if (!trainer || !trainer->isInitialized()) {
+                    gt_metrics_config.metrics_status =
+                        AppStore::CameraMetricsStatus::NeedsInitializedTrainingSession;
+                }
 
                 const auto content_bounds = rendering->getContentBounds(glm::ivec2(
                     std::max(static_cast<int>(viewport_layout_.size.x), 0),
@@ -7376,7 +7445,31 @@ namespace lfs::vis::gui {
                         rendering_manager->reportSceneUpscalerRuntimeSelection(
                             vulkan_viewport_pass_->sceneUpscalerSelection());
                     }
-                    recordVulkanViewport(frame.command_buffer, frame.extent, viewport_params);
+                    struct SceneCaptureContext {
+                        VulkanContext* context;
+                        const VulkanContext::Frame* frame;
+                    } scene_capture_context{vulkan_context, &frame};
+                    const bool capture_armed = !viewport_params.mesh_items.empty() && viewer_ &&
+                                               viewer_->hasActiveSceneCaptureJob();
+                    if (capture_armed) {
+                        vulkan_context->requestSceneCapture();
+                        viewport_params.scene_capture_context = &scene_capture_context;
+                        viewport_params.record_scene_capture = [](void* state, VkCommandBuffer cb) {
+                            const auto* capture = static_cast<const SceneCaptureContext*>(state);
+                            return capture->context->recordSceneCapture(cb, *capture->frame);
+                        };
+                    }
+                    if (capture_armed) {
+                        try {
+                            recordVulkanViewport(frame.command_buffer, frame.extent, viewport_params);
+                        } catch (...) {
+                            vulkan_context->cancelSceneCaptureRequest();
+                            throw;
+                        }
+                        vulkan_context->cancelSceneCaptureRequest();
+                    } else {
+                        recordVulkanViewport(frame.command_buffer, frame.extent, viewport_params);
+                    }
                 }
                 {
                     LOG_TIMER("gui_render.rmlui_record");
@@ -7402,6 +7495,7 @@ namespace lfs::vis::gui {
                     }
                 }
                 if (viewer_) {
+                    viewer_->completeSceneCaptureFrame(viewport_pass_ready);
                     viewer_->processRenderWorkQueue();
                 }
                 // Synchronous full-window capture explicitly submits and consumes
@@ -7427,6 +7521,7 @@ namespace lfs::vis::gui {
                              interactive_transition_resume_training_);
                 }
                 if (viewer_) {
+                    viewer_->completeSceneCaptureFrame(false);
                     viewer_->processRenderWorkQueue();
                 }
             }
@@ -7444,6 +7539,7 @@ namespace lfs::vis::gui {
         }
 
         if (!vulkan_gui_ && viewer_) {
+            viewer_->completeSceneCaptureFrame(false);
             viewer_->processRenderWorkQueue();
         }
         updateInteractiveTransitionGuard();
@@ -8023,6 +8119,11 @@ namespace lfs::vis::gui {
                 VulkanViewportPassParams params;
                 params.mesh_view_projection = frame.view_projection;
                 params.mesh_camera_position = frame.camera_position;
+                params.mesh_camera_backward = frame.camera_backward;
+                params.mesh_depth_view = frame.depth_view;
+                params.mesh_depth_view_min = frame.depth_view_min;
+                params.mesh_depth_view_max = frame.depth_view_max;
+                params.mesh_depth_grayscale = frame.depth_grayscale;
                 params.mesh_items = frame.items;
                 params.mesh_panels = frame.panels;
                 params.environment = frame.environment;
@@ -8108,13 +8209,24 @@ namespace lfs::vis::gui {
             queueUiVisibilityToggle();
         });
 
-        ui::ToggleVramHud::when([this](const auto&) {
+        const auto save_hud_preferences = [this](LayoutState& state) {
+            bool backed_up = false;
+            state.saveUserPreferences(&backed_up);
+            if (backed_up)
+                enqueueToast(ToastRequest{
+                    .title = LOC("preferences.ui_preferences_backup_title"),
+                    .message = LOC("preferences.ui_preferences_backup_message"),
+                    .level = ErrorNoticeLevel::Warning,
+                });
+        };
+
+        ui::ToggleVramHud::when([this, save_hud_preferences](const auto&) {
             show_vram_hud_ = !show_vram_hud_;
             LayoutState state;
             state.load();
             state.perf_hud_visible = show_vram_hud_;
             state.perf_hud_expanded = perf_hud_expanded_;
-            state.saveUserPreferences();
+            save_hud_preferences(state);
             if (auto* rm = viewer_->getRenderingManager())
                 rm->frameDemandLedger().request({.reason = FrameReason::GuiLayout,
                                                  .scope = FrameScope::Gui,
@@ -8122,13 +8234,13 @@ namespace lfs::vis::gui {
                                                  .detail = "performance_hud"});
         });
 
-        ui::TogglePerfHudExpanded::when([this](const auto&) {
+        ui::TogglePerfHudExpanded::when([this, save_hud_preferences](const auto&) {
             perf_hud_expanded_ = !perf_hud_expanded_;
             LayoutState state;
             state.load();
             state.perf_hud_visible = show_vram_hud_;
             state.perf_hud_expanded = perf_hud_expanded_;
-            state.saveUserPreferences();
+            save_hud_preferences(state);
             if (auto* rm = viewer_->getRenderingManager())
                 rm->frameDemandLedger().request({.reason = FrameReason::GuiLayout,
                                                  .scope = FrameScope::Gui,
@@ -8136,14 +8248,14 @@ namespace lfs::vis::gui {
                                                  .detail = "performance_hud"});
         });
 
-        ui::OpenPerfHudLedger::when([this](const auto&) {
+        ui::OpenPerfHudLedger::when([this, save_hud_preferences](const auto&) {
             perf_hud_expanded_ = true;
             LayoutState state;
             state.load();
             state.perf_hud_visible = show_vram_hud_;
             state.perf_hud_expanded = true;
             state.vram_hud_active_tab = "ledger";
-            state.saveUserPreferences();
+            save_hud_preferences(state);
             if (auto* rm = viewer_->getRenderingManager())
                 rm->frameDemandLedger().request({.reason = FrameReason::GuiLayout,
                                                  .scope = FrameScope::Gui,
