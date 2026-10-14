@@ -1,10 +1,14 @@
 /* SPDX-FileCopyrightText: 2026 LichtFeld Studio Authors
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
+#include "core/logger.hpp"
 #include "core/path_utils.hpp"
 #include "core/user_paths.hpp"
 #include "gui/layout_state.hpp"
 #include "gui/panel_layout.hpp"
+#include "project/project_lifecycle.hpp"
+#include "project/session_state.hpp"
+#include "rendering/rendering_types.hpp"
 #include "visualizer/preferences.hpp"
 
 #include <gtest/gtest.h>
@@ -154,6 +158,70 @@ TEST(PreferencesMigration, LegacyLayoutLoadsGeometryAndSequencerPerField) {
     EXPECT_FLOAT_EQ(applied.bottom_dock_height, 280);
     EXPECT_FLOAT_EQ(applied.left_dock_width, 370);
     EXPECT_TRUE(applied.show_sequencer);
+}
+
+TEST(PreferencesMigration, OptionalNullContainersUseDefaultsWithoutWarning) {
+    const auto home = makeHome("lfs_preferences_null_containers");
+    const ScopedLfsHome scoped_home(home);
+    const auto paths = lfs::core::UserPaths::resolve();
+    ASSERT_TRUE(paths);
+    ASSERT_TRUE(paths->ensureDirectories());
+    const auto layout_path = paths->configDir() / "layout.json";
+    std::ofstream(layout_path) << R"({"windows":null,"vram_hud":null})";
+    std::ofstream(paths->uiPreferencesFile())
+        << json({{"vram_hud", {{"collapsed", nullptr}}},
+                 {"perf_hud", nullptr}})
+               .dump(2);
+    writePreferences(*paths, json::object({
+                                 {"project_manager", json::object({{"state", nullptr}})},
+                                 {"mcp", nullptr},
+                                 {"scene_upscaler_presets", nullptr},
+                             }));
+    const auto preference_fixture = readPreferences(*paths);
+    ASSERT_TRUE(preference_fixture.at("project_manager").is_object());
+    ASSERT_TRUE(preference_fixture.at("project_manager").at("state").is_null());
+
+    auto& logger = lfs::core::Logger::get();
+    const auto previous_level = logger.level();
+    const bool initialized_here = !logger.is_ready();
+    if (initialized_here)
+        logger.init(lfs::core::LogLevel::Warn, "", "", false, home.string());
+
+    std::string warnings;
+    const auto token = lfs::core::Logger::get().add_log_handler(
+        [&warnings](const lfs::core::LogLevel level, const lfs::core::SourceSite&,
+                    const std::string_view message) {
+            if (level == lfs::core::LogLevel::Warn)
+                warnings += std::string(message) + '\n';
+        });
+    lfs::vis::gui::LayoutState state;
+    state.load();
+    EXPECT_TRUE(state.window_visibility.empty());
+    EXPECT_TRUE(state.vram_hud_collapsed_paths.empty());
+    EXPECT_FALSE(state.perf_hud_visible);
+    EXPECT_TRUE(state.perf_hud_expanded);
+    EXPECT_EQ(lfs::vis::loadProjectLocationPreference(), paths->rootDir() / "projects");
+    const auto lifecycle_path = home / "project_lifecycle.json";
+    std::ofstream(lifecycle_path)
+        << R"({"version":2,"mru":null,"dismissed_recovery":null})";
+    const auto lifecycle = lfs::vis::project::loadProjectLifecycleSettings(lifecycle_path);
+    EXPECT_TRUE(lifecycle);
+    if (lifecycle) {
+        EXPECT_TRUE(lifecycle->mru.empty());
+        EXPECT_TRUE(lifecycle->dismissed_recovery.empty());
+    }
+    EXPECT_TRUE(warnings.empty()) << warnings;
+
+    std::ofstream(layout_path, std::ios::trunc) << R"({"windows":5})";
+    lfs::vis::gui::LayoutState wrong_type;
+    wrong_type.load();
+    lfs::core::Logger::get().remove_log_handler(token);
+    if (initialized_here) {
+        logger.reset_for_testing();
+        logger.set_level(previous_level);
+    }
+    EXPECT_TRUE(wrong_type.window_visibility.empty());
+    EXPECT_NE(warnings.find("Invalid window visibility map in UI settings"), std::string::npos);
 }
 
 TEST(PreferencesMigration, UiPreferencesKeepFutureFieldsAndBackUpDamagedFile) {
@@ -434,4 +502,85 @@ TEST(PreferencesMigration, InvalidProjectManagerPreferencesFallBackWithoutContam
     EXPECT_THROW(preferences.setProjectManagerDefaultView("tiles"), std::invalid_argument);
     EXPECT_THROW(preferences.setProjectManagerState("[]"), std::invalid_argument);
     EXPECT_EQ(readPreferences(*paths).at("theme"), "dark");
+}
+
+TEST(PreferencesMigration, RenderingDefaultsPreserveFutureFieldsAndDoNotChangeProjectValues) {
+    const auto home = makeHome("lfs_rendering_defaults_future");
+    const ScopedLfsHome scoped_home(home);
+    const auto paths = lfs::core::UserPaths::resolve();
+    ASSERT_TRUE(paths);
+    ASSERT_TRUE(paths->ensureDirectories());
+    writePreferences(*paths, {{"schema_version", 999}, {"theme", "dark"}, {"rendering_defaults", {{"show_grid", false}, {"future_limit", 42}}}});
+    auto& preferences = lfs::vis::UserPreferences::instance();
+    lfs::vis::RenderSettings project;
+    project.grid_opacity = 0.8f;
+    project.focal_length_mm = 85.0f;
+    ASSERT_TRUE(preferences.setRenderingDefaults(R"({"grid_opacity":0.25})"));
+    EXPECT_FLOAT_EQ(project.grid_opacity, 0.8f);
+    EXPECT_TRUE(project.show_grid);
+    const auto saved = readPreferences(*paths);
+    EXPECT_EQ(saved["schema_version"], 999);
+    EXPECT_EQ(saved["rendering_defaults"]["future_limit"], 42);
+    EXPECT_EQ(saved["rendering_defaults"]["show_grid"], false);
+    EXPECT_EQ(saved["theme"], "dark");
+    ASSERT_TRUE(lfs::vis::applyRenderingDefaults(project, preferences.renderingDefaults()));
+    EXPECT_FLOAT_EQ(project.grid_opacity, 0.25f);
+    EXPECT_FALSE(project.show_grid);
+    EXPECT_FLOAT_EQ(project.focal_length_mm, 85.0f);
+}
+
+TEST(PreferencesMigration, RenderingDefaultsRejectInvalidPatchesAtomically) {
+    lfs::vis::RenderSettings settings;
+    const auto before = lfs::vis::renderingDefaultsFromSettings(settings);
+    for (const auto* value : {R"({"show_grid":false,"axes_size":-1})",
+                              R"({"lod_page_pool_splats":1.5})", R"({"lod_pool_vram_fraction":1})",
+                              R"({"selection_color_preview":[0,2,0]})", R"({"show_grid":"false"})",
+                              R"({"axes_size":"nan"})", R"([])"}) {
+        EXPECT_FALSE(lfs::vis::applyRenderingDefaults(settings, value));
+        EXPECT_EQ(lfs::vis::renderingDefaultsFromSettings(settings), before);
+    }
+}
+
+TEST(PreferencesMigration, DamagedRenderingDefaultDoesNotDiscardValidFields) {
+    const auto home = makeHome("lfs_rendering_defaults_damaged");
+    const ScopedLfsHome scoped_home(home);
+    const auto paths = lfs::core::UserPaths::resolve();
+    ASSERT_TRUE(paths);
+    ASSERT_TRUE(paths->ensureDirectories());
+    writePreferences(*paths, {{"rendering_defaults", {{"show_grid", false}, {"axes_size", "bad"}, {"selection_color_preview", {0, 2, 0}}, {"lod_pool_vram_fraction", 0.3}}}});
+    const auto values = json::parse(lfs::vis::UserPreferences::instance().renderingDefaults());
+    EXPECT_EQ(values["show_grid"], false);
+    EXPECT_EQ(values["axes_size"], lfs::vis::RenderSettings{}.axes_size);
+    EXPECT_NEAR(values["lod_pool_vram_fraction"].get<float>(), 0.3f, 0.00001f);
+    EXPECT_EQ(values["selection_color_preview"],
+              json::parse(lfs::vis::renderingDefaultsFromSettings(lfs::vis::RenderSettings{}))["selection_color_preview"]);
+}
+
+TEST(PreferencesMigration, SavedProjectViewOverridesNewUserDefaults) {
+    lfs::vis::RenderSettings original;
+    original.grid_opacity = 0.9f;
+    original.selection_color_preview = {0.2f, 0.3f, 0.4f};
+    original.lod_page_pool_splats = 123456;
+    const auto saved_view = lfs::vis::project::renderSettingsToProjectJson(original);
+    lfs::vis::RenderSettings restored;
+    ASSERT_TRUE(lfs::vis::applyRenderingDefaults(restored, R"({"grid_opacity":0.1,"lod_page_pool_splats":999})"));
+    // The existing VIEW restoration remains authoritative over startup defaults.
+    const auto decoded = lfs::vis::project::renderSettingsFromProjectJson(saved_view, restored);
+    ASSERT_TRUE(decoded);
+    EXPECT_EQ(lfs::vis::renderingDefaultsFromSettings(*decoded),
+              lfs::vis::renderingDefaultsFromSettings(original));
+}
+
+TEST(PreferencesMigration, ViewportVignetteIsGlobalAndValidated) {
+    const auto home = makeHome("lfs_viewport_vignette_preferences");
+    const ScopedLfsHome scoped_home(home);
+    auto& preferences = lfs::vis::UserPreferences::instance();
+    EXPECT_EQ(json::parse(preferences.viewportVignette()), json::object());
+    ASSERT_TRUE(preferences.setViewportVignette(R"({"enabled":true,"radius":0.4,"intensity":0.2,"softness":0.6})"));
+    EXPECT_EQ(json::parse(preferences.viewportVignette())["enabled"], true);
+    EXPECT_FALSE(preferences.setViewportVignette(R"({"enabled":false,"radius":2})"));
+    EXPECT_EQ(json::parse(preferences.viewportVignette())["enabled"], true);
+    const auto paths = lfs::core::UserPaths::resolve();
+    ASSERT_TRUE(paths);
+    EXPECT_EQ(readPreferences(*paths)["viewport_vignette"]["radius"], 0.4);
 }

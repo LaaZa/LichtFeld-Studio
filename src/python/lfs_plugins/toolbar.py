@@ -481,7 +481,7 @@ class _GizmoToolbarController:
             active_submode = tool_def.submodes[0].id
             set_selection_mode = getattr(lf.ui, "set_selection_mode", None)
             if callable(set_selection_mode):
-                set_selection_mode(active_submode)
+                set_selection_mode(active_submode, mark_session_dirty=False)
 
         mode_buttons = []
         for mode in tool_def.submodes:
@@ -497,6 +497,20 @@ class _GizmoToolbarController:
                     tooltip_text=mode.label,
                     action_id=self._SELECTION_MODE_ACTIONS.get(mode.id, ""),
                     selected=selected,
+                    enabled=enabled,
+                )
+            )
+
+        if histogram_mode_available(context):
+            mode_buttons.append(
+                _button_record(
+                    "selection-histogram",
+                    "toggle_histogram",
+                    _HISTOGRAM_PANEL_ID,
+                    _icon_src("histogram.png"),
+                    tooltip_key="toolbar.histogram",
+                    tooltip_text="Histogram",
+                    selected=_panel_enabled(_HISTOGRAM_PANEL_ID),
                     enabled=enabled,
                 )
             )
@@ -976,7 +990,7 @@ class _GizmoToolbarController:
 
         if not active_submode and not is_transform_tool and not is_mirror_tool:
             active_submode = tool_def.submodes[0].id
-            lf.ui.set_selection_mode(active_submode)
+            lf.ui.set_selection_mode(active_submode, mark_session_dirty=False)
 
         records = []
         for mode in tool_def.submodes:
@@ -1190,7 +1204,6 @@ class _GizmoToolbarController:
 
 class _UtilityToolbarController:
     _ASSET_MANAGER_PANEL_ID = "lfs.asset_manager"
-    _PREFERENCES_PANEL_ID = "lfs.preferences"
     _PLUGIN_MARKETPLACE_PANEL_ID = "lfs.plugin_marketplace"
     _CAMERA_MODE_SPECS = (
         ("camera-orbit", "orbit", "toolbar.orbit_camera", "Orbit Camera"),
@@ -1216,7 +1229,6 @@ class _UtilityToolbarController:
 
     def snapshot(self):
         import lichtfeld as lf
-        from .histogram_support import histogram_mode_available
 
         try:
             camera_mode = str(lf.get_camera_navigation_mode()).lower()
@@ -1263,14 +1275,13 @@ class _UtilityToolbarController:
 
         utility_extra_buttons = [
             _button_record(
-                "util-preferences",
+                "util-asset-manager",
                 "toggle_panel",
-                self._PREFERENCES_PANEL_ID,
-                _icon_src("settings"),
-                tooltip_key="window.preferences",
-                tooltip_text="Preferences",
-                action_id="OPEN_PREFERENCES",
-                selected=_panel_enabled(self._PREFERENCES_PANEL_ID),
+                self._ASSET_MANAGER_PANEL_ID,
+                _icon_src("archive"),
+                tooltip_key="toolbar.asset_manager",
+                tooltip_text="Projects",
+                selected=_panel_enabled(self._ASSET_MANAGER_PANEL_ID),
             ),
             _button_record(
                 "util-viewport-export",
@@ -1281,24 +1292,6 @@ class _UtilityToolbarController:
                 tooltip_text="Viewport Export",
                 selected=self._is_viewport_export_visible(),
             ),
-            _button_record(
-                "util-asset-manager",
-                "toggle_panel",
-                self._ASSET_MANAGER_PANEL_ID,
-                _icon_src("archive"),
-                tooltip_key="toolbar.asset_manager",
-                tooltip_text="Asset Manager",
-                selected=_panel_enabled(self._ASSET_MANAGER_PANEL_ID),
-            ),
-            _button_record(
-                "util-plugin-marketplace",
-                "toggle_panel",
-                self._PLUGIN_MARKETPLACE_PANEL_ID,
-                _icon_src("puzzle"),
-                tooltip_key="menu.tools.plugin_marketplace",
-                tooltip_text="Plugin Marketplace",
-                selected=_panel_enabled(self._PLUGIN_MARKETPLACE_PANEL_ID),
-            )
         ]
         utility_bottom_buttons = []
         if has_render_manager:
@@ -1321,20 +1314,17 @@ class _UtilityToolbarController:
                 )
             )
 
-        if histogram_mode_available(lf.ui.context()):
-            utility_bottom_buttons.append(
-                _button_record(
-                    "util-histogram",
-                    "toggle_panel",
-                    _HISTOGRAM_PANEL_ID,
-                    _icon_src("histogram.png"),
-                    tooltip_key="toolbar.histogram",
-                    tooltip_text="Histogram",
-                    selected=_bottom_dock_panel_selected(
-                        _HISTOGRAM_PANEL_ID, _panel_enabled(_HISTOGRAM_PANEL_ID)
-                    ),
-                )
+        utility_extra_buttons.append(
+            _button_record(
+                "util-plugin-marketplace",
+                "toggle_panel",
+                self._PLUGIN_MARKETPLACE_PANEL_ID,
+                _icon_src("puzzle"),
+                tooltip_key="menu.tools.plugin_marketplace",
+                tooltip_text="Plugin Marketplace",
+                selected=_panel_enabled(self._PLUGIN_MARKETPLACE_PANEL_ID),
             )
+        )
 
         return {
             "camera_mode_buttons": camera_mode_buttons,
@@ -1354,6 +1344,20 @@ class _UtilityToolbarController:
             return
         if action == "focus_selection":
             lf.focus_selection()
+            return
+        if action == "toggle_histogram":
+            if not histogram_mode_available(lf.ui.context()):
+                lf.ui.set_panel_enabled(value, False)
+                return
+            if not _panel_enabled(value):
+                select_tool = ToolRegistry.get("builtin.select")
+                if select_tool is not None and select_tool.can_activate(lf.ui.context()):
+                    ToolRegistry.set_active("builtin.select")
+            _toggle_bottom_dock_panel(
+                value,
+                _panel_enabled(value),
+                lambda visible: lf.ui.set_panel_enabled(value, visible),
+            )
             return
         if action == "toggle_sequencer":
             if RuntimeState.trainer_state.value in _TOOLBAR_HIDDEN_STATES:
@@ -1839,13 +1843,6 @@ class _ViewportToolbarController:
         can_transform_selection = bool(
             call(False, getattr(lf, "can_transform_selection", None))
         )
-        preferences_enabled = bool(
-            call(
-                False,
-                getattr(lf.ui, "is_panel_enabled", None),
-                _UtilityToolbarController._PREFERENCES_PANEL_ID,
-            )
-        )
         asset_manager_enabled = bool(
             call(
                 False,
@@ -1896,7 +1893,6 @@ class _ViewportToolbarController:
             _bottom_dock_panel_space(_SEQUENCER_PANEL_ID),
             call("", getattr(lf.ui, "get_bottom_dock_active_tab", None)),
             bool(histogram_mode_available(ui_context)) if ui_context is not None else False,
-            preferences_enabled,
             asset_manager_enabled,
             plugin_marketplace_enabled,
             bool(call(False, getattr(lf.ui, "is_panel_enabled", None), "lfs.histogram")),

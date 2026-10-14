@@ -28,6 +28,7 @@
 #include "visualizer/visualizer.hpp"
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
@@ -39,6 +40,7 @@
 #include <gtest/gtest.h>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <optional>
 #include <string>
 #include <thread>
@@ -74,6 +76,23 @@ namespace lfs::vis {
 
             std::string name_;
             std::optional<std::string> previous_;
+        };
+
+        int python_console_toggle_calls = 0;
+
+        void recordPythonConsoleToggle() {
+            ++python_console_toggle_calls;
+        }
+
+        class RestorePythonConsoleCallback {
+        public:
+            RestorePythonConsoleCallback() {
+                python_console_toggle_calls = 0;
+                lfs::python::set_show_python_console_callback(&recordPythonConsoleToggle);
+            }
+            ~RestorePythonConsoleCallback() {
+                lfs::python::set_show_python_console_callback(nullptr);
+            }
         };
 
         class InputControllerFocusTest : public ::testing::Test {
@@ -297,6 +316,87 @@ namespace lfs::vis {
         EXPECT_FALSE(controller.needsCameraAnimationFrame());
         controller.handleKey(input::KEY_W, input::ACTION_PRESS, input::KEYMOD_NONE);
         EXPECT_TRUE(controller.needsCameraAnimationFrame());
+    }
+
+    TEST_F(InputControllerFocusTest, OrthographicWasdMatchesPerspectiveThroughUpdate) {
+        RenderingManager rendering;
+        services().set(&rendering);
+        auto settings = rendering.getSettings();
+        settings.focal_length_mm = 50.0f;
+        settings.orthographic = true;
+        settings.ortho_scale = 70.0f;
+        rendering.updateSettings(settings);
+        constexpr float dt = 1.0f / 60.0f;
+        constexpr int frames = 30;
+        const auto hold = [&](InputController& controller, const int key) {
+            controller.handleKey(key, input::ACTION_PRESS, input::KEYMOD_NONE);
+            for (int i = 0; i < frames; ++i)
+                controller.update(dt);
+            controller.handleKey(key, input::ACTION_RELEASE, input::KEYMOD_NONE);
+        };
+        Viewport ortho(200, 200);
+        InputController ortho_controller(nullptr, ortho);
+        input::InputRouter ortho_router;
+        ortho_controller.setInputRouter(&ortho_router);
+        ortho_controller.initialize();
+        ortho_router.focusViewportKeyboard();
+        const auto eye = ortho.camera.t;
+        const auto pivot = ortho.camera.pivot;
+        const float distance_to_pivot = glm::length(pivot - eye);
+        hold(ortho_controller, input::KEY_A);
+        const float ortho_pixels = glm::length(ortho.camera.t - eye) * settings.ortho_scale;
+        settings.ortho_scale = 140.0f;
+        rendering.updateSettings(settings);
+        ortho.camera.clearWasdMomentum();
+        ortho.camera.t = eye;
+        ortho.camera.pivot = pivot;
+        hold(ortho_controller, input::KEY_A);
+        const float wide_ortho_pixels = glm::length(ortho.camera.t - eye) * settings.ortho_scale;
+        settings.ortho_scale = 70.0f;
+        rendering.updateSettings(settings);
+        Viewport forward_ortho(200, 200);
+        forward_ortho.camera.t = eye;
+        forward_ortho.camera.pivot = pivot;
+        forward_ortho.camera.pivot = pivot;
+        InputController forward_controller(nullptr, forward_ortho);
+        input::InputRouter forward_router;
+        forward_controller.setInputRouter(&forward_router);
+        forward_controller.initialize();
+        forward_router.focusViewportKeyboard();
+        hold(forward_controller, input::KEY_W);
+        EXPECT_GT(rendering.getSettings().ortho_scale, settings.ortho_scale);
+        const glm::vec3 forward = lfs::rendering::cameraForward(forward_ortho.camera.R);
+        const float moved_distance = glm::dot(forward_ortho.camera.t - eye, forward);
+        EXPECT_GT(moved_distance, 0.0f);
+        const float next_distance = glm::length(forward_ortho.camera.pivot - forward_ortho.camera.t);
+        EXPECT_LT(glm::length(forward_ortho.camera.pivot - pivot), 1e-5f);
+        EXPECT_NEAR(next_distance * rendering.getSettings().ortho_scale,
+                    distance_to_pivot * settings.ortho_scale, 1e-3f);
+        settings.orthographic = false;
+        rendering.updateSettings(settings);
+        Viewport perspective(200, 200);
+        perspective.camera.t = eye;
+        perspective.camera.pivot = pivot;
+        InputController perspective_controller(nullptr, perspective);
+        input::InputRouter perspective_router;
+        perspective_controller.setInputRouter(&perspective_router);
+        perspective_controller.initialize();
+        perspective_router.focusViewportKeyboard();
+        auto expected = perspective.camera;
+        perspective_controller.handleKey(input::KEY_A, input::ACTION_PRESS, input::KEYMOD_NONE);
+        for (int i = 0; i < frames; ++i) {
+            perspective_controller.update(dt);
+            expected.advanceWasd(dt, false, false, true, false, false, false);
+        }
+        perspective_controller.handleKey(input::KEY_A, input::ACTION_RELEASE, input::KEYMOD_NONE);
+        EXPECT_EQ(perspective.camera.t, expected.t);
+        EXPECT_EQ(perspective.camera.pivot, expected.pivot);
+        const float perspective_pixels = glm::length(perspective.camera.t - eye) *
+                                         (perspective.windowSize.y /
+                                          (2.0f * distance_to_pivot *
+                                           std::tan(glm::radians(rendering.getFovDegrees()) * 0.5f)));
+        EXPECT_NEAR(ortho_pixels, perspective_pixels, 0.75f);
+        EXPECT_NEAR(wide_ortho_pixels, perspective_pixels, 0.75f);
     }
 
     TEST_F(InputControllerFocusTest, PausedOrbitDecaysWithoutFrameTicks) {
@@ -1925,7 +2025,7 @@ namespace lfs::vis {
         std::ifstream persisted(profile_path);
         ASSERT_TRUE(persisted.is_open());
         const std::string contents((std::istreambuf_iterator<char>(persisted)), {});
-        EXPECT_NE(contents.find("\"version\": 31"), std::string::npos); // PROFILE_VERSION
+        EXPECT_NE(contents.find("\"version\": 32"), std::string::npos); // PROFILE_VERSION
         EXPECT_NE(contents.find("Gallery Primary Action"), std::string::npos);
         EXPECT_NE(contents.find("Copy Gallery Link"), std::string::npos);
         EXPECT_NE(contents.find("Refresh Assets"), std::string::npos);
@@ -1987,6 +2087,125 @@ namespace lfs::vis {
         EXPECT_EQ(bindings.getActionForKey(ToolMode::GLOBAL, KEY_ENTER, MODIFIER_CTRL), Action::NONE);
         EXPECT_EQ(bindings.getActionForKey(ToolMode::GLOBAL, KEY_F5, MODIFIER_NONE), Action::NONE);
         std::filesystem::remove(path);
+    }
+
+    TEST_F(InputControllerFocusTest, MenuAcceleratorsResolveAndDispatchThroughInputBindings) {
+        using namespace input;
+        RestorePythonConsoleCallback restore_console_callback;
+        Viewport viewport(200, 200);
+        InputController controller(nullptr, viewport);
+        const auto& bindings = controller.getBindings();
+
+        struct MenuAccelerator {
+            std::string source;
+            Action action = Action::NONE;
+            bool save_project = false;
+        };
+        const auto menu_root = std::filesystem::path(PROJECT_ROOT_PATH) / "src/python/lfs_plugins";
+        std::vector<MenuAccelerator> menu_accelerators;
+        for (const auto& entry : std::filesystem::directory_iterator(menu_root)) {
+            if (entry.path().extension() != ".py" ||
+                !entry.path().filename().string().ends_with("_menu.py"))
+                continue;
+            std::ifstream input(entry.path());
+            ASSERT_TRUE(input.good()) << entry.path();
+            std::string line;
+            while (std::getline(input, line)) {
+                const auto start = line.find("shortcut=");
+                if (start == std::string::npos)
+                    continue;
+                if (line.find("\"Ctrl+S\"", start) != std::string::npos) {
+                    menu_accelerators.push_back(
+                        {.source = entry.path().filename().string(),
+                         .save_project = true});
+                    continue;
+                }
+                auto action_start = line.find("Action.", start);
+                if (action_start == std::string::npos)
+                    action_start = line.find("action.", start);
+                ASSERT_NE(action_start, std::string::npos)
+                    << entry.path().filename().string() << ": " << line;
+                action_start += 7;
+                auto action_end = action_start;
+                while (action_end < line.size() &&
+                       (std::isalnum(static_cast<unsigned char>(line[action_end])) ||
+                        line[action_end] == '_'))
+                    ++action_end;
+                const auto action = actionFromName(
+                    std::string_view(line).substr(action_start, action_end - action_start));
+                ASSERT_TRUE(action)
+                    << entry.path().filename().string() << ": " << line;
+                menu_accelerators.push_back(
+                    {.source = entry.path().filename().string(), .action = *action});
+            }
+        }
+        ASSERT_FALSE(menu_accelerators.empty());
+
+        lfs::event::ScopedHandler handlers;
+        std::map<Action, int> dispatched;
+        const auto record = [&](const Action action) {
+            return [&, action](const auto&) { ++dispatched[action]; };
+        };
+        handlers.subscribe<core::events::cmd::Undo>(record(Action::UNDO));
+        handlers.subscribe<core::events::cmd::Redo>(record(Action::REDO));
+        handlers.subscribe<core::events::cmd::CopySelection>(record(Action::COPY_SELECTION));
+        handlers.subscribe<core::events::cmd::CutSelection>(record(Action::CUT_SELECTION));
+        handlers.subscribe<core::events::cmd::PasteSelection>(record(Action::PASTE_SELECTION));
+        handlers.subscribe<core::events::cmd::InvertSelection>(record(Action::INVERT_SELECTION));
+        handlers.subscribe<core::events::cmd::SelectAll>(record(Action::SELECT_ALL));
+        handlers.subscribe<core::events::cmd::DeselectAll>(record(Action::DESELECT_ALL));
+        handlers.subscribe<core::events::ui::ToggleVramHud>(record(Action::TOGGLE_PERFORMANCE_HUD));
+        handlers.subscribe<core::events::ui::ToggleUI>(record(Action::TOGGLE_UI));
+        handlers.subscribe<core::events::cmd::ProjectSave>(record(Action::NONE));
+
+        const auto default_profile = InputBindings::createDefaultProfile();
+        for (const auto& accelerator : menu_accelerators) {
+            SCOPED_TRACE(accelerator.source);
+            if (accelerator.save_project) {
+                const auto before = dispatched[Action::NONE];
+                const int physical_key = sdlScancodeToAppKey(SDL_SCANCODE_S);
+                const int logical_key = sdlShortcutKeyToAppKey(
+                    SDL_SCANCODE_S,
+                    SDL_GetKeyFromScancode(SDL_SCANCODE_S, SDL_KMOD_NONE, false));
+                EXPECT_EQ(bindings.getActionForKey(ToolMode::GLOBAL, logical_key,
+                                                   MODIFIER_CTRL),
+                          Action::NONE);
+                controller.handleKey(physical_key, logical_key, SDL_SCANCODE_S,
+                                     ACTION_PRESS, MODIFIER_CTRL);
+                EXPECT_EQ(dispatched[Action::NONE], before + 1);
+                continue;
+            }
+
+            const auto binding = std::ranges::find_if(
+                default_profile.bindings, [&](const auto& candidate) {
+                    return candidate.mode == ToolMode::GLOBAL &&
+                           candidate.action == accelerator.action;
+                });
+            ASSERT_NE(binding, default_profile.bindings.end())
+                << getActionName(accelerator.action);
+            const auto* trigger = std::get_if<KeyTrigger>(&binding->trigger);
+            ASSERT_NE(trigger, nullptr) << getActionName(accelerator.action);
+            const auto scancode = appKeyToSdlScancode(trigger->key);
+            ASSERT_NE(scancode, SDL_SCANCODE_UNKNOWN)
+                << getActionName(accelerator.action);
+            const int physical_key = sdlScancodeToAppKey(scancode);
+            const int logical_key = sdlShortcutKeyToAppKey(
+                scancode, SDL_GetKeyFromScancode(scancode, SDL_KMOD_NONE, false));
+            EXPECT_EQ(bindings.getActionForKey(ToolMode::GLOBAL, logical_key,
+                                               trigger->modifiers),
+                      accelerator.action);
+            const auto before = dispatched[accelerator.action];
+            const int console_before = python_console_toggle_calls;
+            controller.handleKey(physical_key, logical_key, scancode,
+                                 ACTION_PRESS, trigger->modifiers);
+            controller.handleKey(physical_key, logical_key, scancode,
+                                 ACTION_RELEASE, trigger->modifiers);
+            if (accelerator.action == Action::TOGGLE_PYTHON_CONSOLE)
+                EXPECT_EQ(python_console_toggle_calls, console_before + 1);
+            else if (accelerator.action != Action::OPEN_PREFERENCES)
+                EXPECT_EQ(dispatched[accelerator.action], before + 1)
+                    << getActionName(accelerator.action);
+        }
     }
 
     TEST_F(InputControllerFocusTest, GalleryActionsHaveRebindableNativeDefaults) {

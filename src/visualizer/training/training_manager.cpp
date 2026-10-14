@@ -37,6 +37,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <cuda_runtime.h>
@@ -48,10 +49,101 @@
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
+
 namespace lfs::vis {
+
+    namespace {
+#ifdef __GLIBC__
+        std::atomic<training_memory_detail::ClearTrainerTrimHook> clear_trainer_trim_hook{nullptr};
+
+        class HeapTrimWorker {
+        public:
+            HeapTrimWorker()
+                : worker_([this] { run(); }) {}
+
+            ~HeapTrimWorker() {
+                shutdown();
+            }
+
+            void shutdown() {
+                {
+                    std::lock_guard lock(mutex_);
+                    stopping_ = true;
+                }
+                condition_.notify_one();
+                if (worker_.joinable())
+                    worker_.join();
+            }
+
+            void request() {
+                {
+                    std::lock_guard lock(mutex_);
+                    if (stopping_) {
+                        if (worker_.joinable())
+                            return;
+                        stopping_ = false;
+                        worker_ = std::thread([this] { run(); });
+                    }
+                    pending_ = true;
+                }
+                condition_.notify_one();
+            }
+
+        private:
+            void run() {
+                std::unique_lock lock(mutex_);
+                while (true) {
+                    condition_.wait(lock, [this] { return stopping_ || pending_; });
+                    if (stopping_ && !pending_)
+                        return;
+                    pending_ = false;
+                    lock.unlock();
+                    if (const auto hook = clear_trainer_trim_hook.load(std::memory_order_acquire))
+                        hook();
+                    else
+                        (void)malloc_trim(0);
+                    lock.lock();
+                }
+            }
+
+            std::mutex mutex_;
+            std::condition_variable condition_;
+            std::thread worker_;
+            bool pending_ = false;
+            bool stopping_ = false;
+        };
+
+        HeapTrimWorker& heap_trim_worker() {
+            static HeapTrimWorker worker;
+            return worker;
+        }
+
+        void shutdown_heap_trim_worker() {
+            heap_trim_worker().shutdown();
+        }
+#else
+        void shutdown_heap_trim_worker() {}
+#endif
+    } // namespace
+
+    void training_memory_detail::setClearTrainerTrimHookForTesting(ClearTrainerTrimHook hook) noexcept {
+#ifdef __GLIBC__
+        clear_trainer_trim_hook.store(hook, std::memory_order_release);
+#else
+        (void)hook;
+#endif
+    }
+
+    void training_memory_detail::shutdownHeapTrimWorker() noexcept {
+        shutdown_heap_trim_worker();
+    }
 
     using namespace lfs::core::events;
 
@@ -153,10 +245,12 @@ namespace lfs::vis {
             bool completed = false;
             bool stopped = false;
             bool hydrated = false;
+            bool restoring = false;
             int iteration = 0;
             int max_iterations = 0;
             int num_gaussians = 0;
             std::string strategy;
+            std::string restore_error;
         };
 
         LastStoredSessionPublish g_last_stored_session_publish;
@@ -864,7 +958,12 @@ namespace lfs::vis {
         if ((action == TrainingAction::Stop || action == TrainingAction::Resume) && !trainer_ && viewer_ &&
             getState() == TrainingState::Paused) {
             const auto session = viewer_->projectTrainingSessionState();
-            return session.available && !session.hydrated && !session.restoring;
+            if (action == TrainingAction::Stop) {
+                return session.available && !session.hydrated &&
+                       !session.restoring;
+            }
+            return session.available && !session.hydrated &&
+                   !session.restoring && session.error.empty();
         }
         return state_machine_.canPerform(action);
     }
@@ -894,7 +993,19 @@ namespace lfs::vis {
 
     void TrainerManager::publishStoredSessionPresentation() {
         if (trainer_) {
+            const auto& last = g_last_stored_session_publish;
+            const bool restore_completed =
+                last.owner == this && last.valid && last.available &&
+                !last.hydrated;
             clearStoredSessionPresentation();
+            if (restore_completed) {
+                auto& generation =
+                    app_store().stored_session_generation;
+                generation.set(generation.get() + 1);
+            }
+            g_last_stored_session_publish = {};
+            g_last_stored_session_publish.owner = this;
+            g_last_stored_session_publish.valid = true;
             return;
         }
         Visualizer::ProjectTrainingSessionState session;
@@ -906,6 +1017,8 @@ namespace lfs::vis {
         desired.owner = this;
         desired.valid = true;
         desired.available = session.available;
+        desired.restoring = session.restoring;
+        desired.restore_error = session.error;
         if (session.available) {
             const core::Scene* scene = scene_;
             if (!scene && viewer_) {
@@ -938,12 +1051,21 @@ namespace lfs::vis {
             last.completed == desired.completed &&
             last.stopped == desired.stopped &&
             last.hydrated == desired.hydrated &&
+            last.restoring == desired.restoring &&
             last.iteration == desired.iteration &&
             last.max_iterations == desired.max_iterations &&
             last.num_gaussians == desired.num_gaussians &&
-            last.strategy == desired.strategy) {
+            last.strategy == desired.strategy &&
+            last.restore_error == desired.restore_error) {
             return;
         }
+
+        const bool restore_state_changed =
+            !last.valid || last.owner != this ||
+            last.available != desired.available ||
+            last.hydrated != desired.hydrated ||
+            last.restoring != desired.restoring ||
+            last.restore_error != desired.restore_error;
 
         if (!session.available) {
             clearStoredSessionPresentation();
@@ -959,6 +1081,10 @@ namespace lfs::vis {
                 python::update_training_state(false, "idle");
                 python::update_trainer_loaded(false, 0, 0);
                 python::flush_signals();
+            }
+            if (restore_state_changed) {
+                app_store().stored_session_generation.set(
+                    app_store().stored_session_generation.get() + 1);
             }
             g_last_stored_session_publish = desired;
             return;
@@ -1003,6 +1129,10 @@ namespace lfs::vis {
                 session.iteration, 0.0f,
                 static_cast<std::size_t>(std::max(0, desired.num_gaussians)));
             python::flush_signals();
+        }
+        if (restore_state_changed) {
+            app_store().stored_session_generation.set(
+                app_store().stored_session_generation.get() + 1);
         }
 
         lfs::training::CommandCenter::instance().update_snapshot(
@@ -1049,11 +1179,13 @@ namespace lfs::vis {
         // Pause events and no-thread stops do not run TrainingEnd's clear_snapshot.
         lfs::training::CommandCenter::instance().reset_snapshot();
 
+        [[maybe_unused]] bool released_trainer = false;
         {
             std::lock_guard<std::mutex> lock(trainer_lifetime_mutex_);
             if (scene_) {
                 scene_->setLiveModelMutex(nullptr);
             }
+            released_trainer = trainer_ != nullptr;
             trainer_.reset();
             trainer_generation_.fetch_add(1, std::memory_order_release);
             // Model tensors retain their own shared ownership while edit/view mode
@@ -1067,6 +1199,15 @@ namespace lfs::vis {
         // Trainer::shutdown() trims before Tensor-valued members are destroyed.
         // Trim again after destruction so those returned blocks do not survive clear.
         lfs::core::Tensor::trim_memory_pool();
+#ifdef __GLIBC__
+        if (released_trainer) {
+            try {
+                heap_trim_worker().request();
+            } catch (const std::system_error& error) {
+                LOG_WARN("Could not schedule background heap trim: {}", error.what());
+            }
+        }
+#endif
 
         if (state_machine_.getState() != TrainingState::Idle && !state_machine_.transitionTo(TrainingState::Idle)) {
             LOG_WARN("Failed to transition to Idle");

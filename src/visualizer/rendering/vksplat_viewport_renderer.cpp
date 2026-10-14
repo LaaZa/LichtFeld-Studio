@@ -2469,14 +2469,14 @@ namespace lfs::vis {
         const bool same_model =
             lod_page_cache_model_ == &splat_data &&
             lod_page_cache_.configured() &&
-            lod_page_cache_.snapshot().logical_chunks == logical_chunks &&
-            !lod_pool_sizing_dirty_;
+            lod_page_cache_.snapshot().logical_chunks == logical_chunks;
+        const bool sizing_dirty = lod_pool_sizing_dirty_;
         // The VRAM-derived size is computed once per model attach and then
         // sticks: free VRAM keeps moving as the pool's own buffers allocate,
         // and reconfiguring resets the whole cache. The pool budget setting or
         // VRAM fraction changing re-arms the computation.
         std::size_t physical_pages;
-        if (same_model) {
+        if (same_model && !sizing_dirty) {
             physical_pages = lod_page_cache_.snapshot().physical_pages;
         } else {
             physical_pages = requestedLodPhysicalPages(
@@ -2487,9 +2487,8 @@ namespace lfs::vis {
                 lod_page_inputs_.model == &splat_data ? lod_page_inputs_.physical_pages : 0);
             lod_pool_sizing_dirty_ = false;
         }
-        const bool needs_configure =
-            !same_model ||
-            lod_page_cache_.snapshot().physical_pages != physical_pages;
+        const bool needs_configure = detail::lodPageCacheNeedsReconfigure(
+            same_model, sizing_dirty, lod_page_cache_.snapshot().physical_pages, physical_pages);
         if (needs_configure) {
             lod_page_cache_model_ = &splat_data;
             const bool disk_backed =
@@ -7821,9 +7820,6 @@ namespace lfs::vis {
         if (!input_binding) {
             return std::unexpected(input_binding.error());
         }
-        if (input_binding->model_snapshot_changed) {
-            macro_chain_warmup_pending_ = true;
-        }
         // The borrowed Vulkan-external model storage stays resident across selection calls.
         // Stale data is detected via the model snapshot and its CUDA producer stream is ordered
         // into the Vulkan batch by the per-ring upload timeline.
@@ -8889,9 +8885,6 @@ namespace lfs::vis {
         if (!input_binding) {
             return std::unexpected(input_binding.error());
         }
-        if (input_binding->model_snapshot_changed) {
-            macro_chain_warmup_pending_ = true;
-        }
         if (lod_request_active) {
             if (auto ok = ensureGpuLodTreeStorage(splat_data); !ok) {
                 static std::string last_gpu_lod_storage_error;
@@ -9148,6 +9141,9 @@ namespace lfs::vis {
         // Synchronous exports use the exact instance-count gate and must keep
         // the same raster chain across every band, including a cold first band.
         // Interactive viewport and sequencer previews retain their warmup.
+        // The legacy chain warms renderer initialization once. Every regular
+        // frame rebuilds projection and sort data from current inputs, so an
+        // input snapshot change does not make an already warmed macro chain cold.
         const bool higs_warmup_frame = higs_candidate && macro_chain_warmup_pending_ &&
                                        !deterministic_export;
         const bool higs_active = higs_candidate && !higs_warmup_frame;

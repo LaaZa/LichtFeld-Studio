@@ -226,6 +226,12 @@ def preferences_panel_module(monkeypatch):
         remember_camera_view_snap=lambda: False,
         set_remember_camera_view_snap=lambda _enabled: None,
     )
+    state.rendering_defaults = {}
+    lf_stub.ui.get_rendering_defaults_json = lambda: json.dumps(state.rendering_defaults)
+    lf_stub.ui.set_rendering_defaults_json = lambda value: state.rendering_defaults.update(json.loads(value))
+    state.auto_save_on_close = False
+    lf_stub.project_auto_save_on_close_enabled = lambda: state.auto_save_on_close
+    lf_stub.project_set_auto_save_on_close = lambda enabled: setattr(state, "auto_save_on_close", bool(enabled))
     lf_stub.keymap = SimpleNamespace(
         ToolMode=IntEnum(
             "ToolMode",
@@ -256,9 +262,11 @@ def preferences_panel_module(monkeypatch):
             CAMERA_SET_HOME=SimpleNamespace(name="CAMERA_SET_HOME", value=17),
             CAMERA_NEXT_VIEW=SimpleNamespace(name="CAMERA_NEXT_VIEW", value=18),
             CAMERA_PREV_VIEW=SimpleNamespace(name="CAMERA_PREV_VIEW", value=19),
+            CAMERA_FOCUS_SELECTION=SimpleNamespace(name="CAMERA_FOCUS_SELECTION", value=76),
             SELECTION_REPLACE=SimpleNamespace(name="SELECTION_REPLACE", value=20),
             SELECTION_ADD=SimpleNamespace(name="SELECTION_ADD", value=21),
             SELECTION_REMOVE=SimpleNamespace(name="SELECTION_REMOVE", value=22),
+            SELECTION_INTERSECT=SimpleNamespace(name="SELECTION_INTERSECT", value=77),
             SELECT_MODE_CENTERS=SimpleNamespace(name="SELECT_MODE_CENTERS", value=23),
             SELECT_MODE_RECTANGLE=SimpleNamespace(name="SELECT_MODE_RECTANGLE", value=24),
             SELECT_MODE_POLYGON=SimpleNamespace(name="SELECT_MODE_POLYGON", value=25),
@@ -327,6 +335,20 @@ def preferences_panel_module(monkeypatch):
             TOGGLE_SCENE_SELECTION_TRAINING=SimpleNamespace(
                 name="TOGGLE_SCENE_SELECTION_TRAINING", value=84
             ),
+            GROUP_SELECTED_SCENE_NODES=SimpleNamespace(
+                name="GROUP_SELECTED_SCENE_NODES", value=78
+            ),
+            UNGROUP_SELECTED_SCENE_NODE=SimpleNamespace(
+                name="UNGROUP_SELECTED_SCENE_NODE", value=79
+            ),
+            ASSET_GALLERY_PRIMARY=SimpleNamespace(
+                name="ASSET_GALLERY_PRIMARY", value=80
+            ),
+            ASSET_GALLERY_COPY_LINK=SimpleNamespace(
+                name="ASSET_GALLERY_COPY_LINK", value=81
+            ),
+            ASSET_REFRESH=SimpleNamespace(name="ASSET_REFRESH", value=85),
+            TOGGLE_PYTHON_CONSOLE=SimpleNamespace(name="TOGGLE_PYTHON_CONSOLE", value=90),
         ),
         get_available_profiles=lambda: ["Default"],
         get_current_profile=lambda: "Default",
@@ -389,6 +411,7 @@ def preferences_panel_module(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "lichtfeld", lf_stub)
     sys.modules.pop("lfs_plugins.preferences_panel", None)
+    sys.modules.pop("lfs_plugins.rendering_defaults", None)
     sys.modules.pop("lfs_plugins.keymap_bindings", None)
     sys.modules.pop("lfs_plugins", None)
     module = import_module("lfs_plugins.preferences_panel")
@@ -883,7 +906,8 @@ def test_title_bar_close_listener_discards_unconfirmed_mcp_port(
     document = SimpleNamespace(
         get_element_by_id=lambda element_id: (
             close_button if element_id == "close-btn" else None
-        )
+        ),
+        query_selector_all=lambda _selector: [],
     )
     monkeypatch.setattr(panel, "_dirty_expanded_sections", lambda: None)
     monkeypatch.setattr(panel, "_rebuild_records", lambda: None)
@@ -1157,6 +1181,9 @@ def test_preferences_close_retains_the_mounted_document(preferences_panel_module
         def get_element_by_id(self, _element_id):
             return None
 
+        def query_selector_all(self, _selector):
+            return []
+
     document = Document()
     panel._rebuild_records = lambda: None
     panel._load_mcp_preferences = lambda: None
@@ -1293,3 +1320,21 @@ def test_navigation_defaults_do_not_modify_current_project(preferences_panel_mod
     assert state.new_project_navigation_calls[-1] == ("data_z", False)
     assert state.navigation_up_calls == []
     assert state.navigation_up_axis == "legacy_y"
+
+
+def test_save_on_close_change_invalidates_preferences_state(preferences_panel_module):
+    module, state = preferences_panel_module
+    panel = module.PreferencesPanel()
+    before = panel._state()
+    module.lf.project_set_auto_save_on_close(True)
+    assert state.auto_save_on_close is True
+    assert panel._state() != before
+
+
+def test_default_app_settings_preserve_registration_step(preferences_panel_module):
+    module, _state = preferences_panel_module
+    calls = []
+    module.lf.ui.register_file_associations = lambda: calls.append("register")
+    module.lf.ui.open_file_association_settings = lambda: calls.append("open")
+    module.PreferencesPanel._open_default_app_settings()
+    assert calls == ["register", "open"]
