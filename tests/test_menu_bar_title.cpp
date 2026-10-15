@@ -7,14 +7,17 @@
 #include "gui/rml_menu_bar.hpp"
 #include "gui/rmlui/rml_theme.hpp"
 #include "input/input_bindings.hpp"
+#include "input/input_controller.hpp"
 #include "ipc/view_context.hpp"
 #include "python/python_runtime.hpp"
 #include "rendering/render_pass.hpp"
 #include "visualizer/app_store.hpp"
 #include "visualizer/visualizer.hpp"
+#include <SDL3/SDL_keycode.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <nlohmann/json.hpp>
 
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/ElementDocument.h>
@@ -48,6 +51,8 @@ namespace lfs::vis::gui {
             bar.open_grandchild_submenu_index_ = -1;
             bar.keyboard_path_.fill(-1);
             bar.keyboard_depth_ = 0;
+            bar.keyboard_opened_menu_ = false;
+            bar.syncAccessKeyVisibility();
             bar.moveKeyboardHighlight(1, true);
             bar.dropdown_container_->SetClass("visible", true);
             bar.dropdown_popup_->SetProperty("left", "1400px");
@@ -73,6 +78,15 @@ namespace lfs::vis::gui {
                 bar.handleMenuKey(event, false, false);
             }
             return dispatch.consumed;
+        }
+        static void heldKey(RmlMenuBar& bar, SDL_Scancode code) {
+            lfs::vis::gui::PanelInputState input{};
+            input.screen_w = 1600;
+            input.screen_h = 300;
+            lfs::vis::InputEventDispatch dispatch;
+            input.input_events.push_back(
+                {.kind = lfs::vis::FrameInputEventKind::KeyDown, .scancode = code, .repeat = true, .dispatch = &dispatch});
+            bar.processInput(input);
         }
         static void key(RmlMenuBar& bar, SDL_Scancode code) {
             SCOPED_TRACE(static_cast<int>(code));
@@ -100,6 +114,7 @@ namespace lfs::vis::gui {
         static void enableLeafLabel(RmlMenuBar& bar, int root, int child, int grandchild, int leaf) {
             bar.dropdown_items_[root].children[child].children[grandchild].children[leaf].enabled = true;
         }
+        static void keepContextHeight(RmlMenuBar& bar) { bar.last_ctx_h_ = bar.rml_context_->GetDimensions().y; }
         static void windowFocusLost(RmlMenuBar& bar) { bar.onWindowFocusLost(); }
         static bool renderNeeded(const RmlMenuBar& bar) { return bar.render_needed_; }
         static void setRenderNeeded(RmlMenuBar& bar, bool needed) { bar.render_needed_ = needed; }
@@ -162,6 +177,25 @@ namespace lfs::vis::gui {
             bar.menu_window_controls_ = doc->GetElementById("menu-window-controls");
             bar.project_title_container_ = doc->GetElementById("project-title");
             bar.project_title_el_ = doc->GetElementById("project-title-content");
+            bar.body_el_ = doc->GetElementById("body");
+        }
+        static bool accessVisible(const RmlMenuBar& bar) {
+            return bar.body_el_ && bar.body_el_->IsClassSet("access-keys-visible");
+        }
+        static bool letterKey(RmlMenuBar& bar, SDL_Keycode key, SDL_Keymod modifiers = SDL_KMOD_NONE,
+                              bool repeat = false) {
+            lfs::vis::gui::PanelInputState input{};
+            input.screen_w = 1600;
+            input.screen_h = 300;
+            lfs::vis::InputEventDispatch dispatch;
+            input.input_events.push_back({.kind = lfs::vis::FrameInputEventKind::KeyDown,
+                                          .scancode = SDL_SCANCODE_UNKNOWN,
+                                          .keycode = key,
+                                          .modifiers = modifiers,
+                                          .repeat = repeat,
+                                          .dispatch = &dispatch});
+            bar.processInput(input);
+            return dispatch.consumed;
         }
         static void fullToolbar(RmlMenuBar& bar) {
             bar.camera_buttons_.resize(4);
@@ -301,6 +335,32 @@ namespace {
             context_->Update();
         }
         std::string titleText() { return textContent(el("project-title-content")->GetChild(0)); }
+        struct MenuKeyState {
+            bool open = false;
+            int index = -1;
+            int depth = -1;
+            int path0 = -1;
+            bool operator==(const MenuKeyState&) const = default;
+        };
+        MenuKeyState menuKeyState() {
+            return {bar_.isOpen(), RmlMenuBarTestAccess::menuIndex(bar_), RmlMenuBarTestAccess::depth(bar_),
+                    RmlMenuBarTestAccess::path(bar_, 0)};
+        }
+        Rml::Element* rowByCallback(int callback) {
+            Rml::ElementList rows;
+            el("dropdown-popup")->GetElementsByClassName(rows, "menu-item");
+            for (auto* row : rows)
+                if (row->GetAttribute<int>("data-callback-index", -1) == callback)
+                    return row;
+            return nullptr;
+        }
+        std::string accessMark(Rml::Element* row) {
+            Rml::ElementList marks;
+            row->GetElementsByClassName(marks, "access-key");
+            if (marks.size() != 1)
+                return {};
+            return textContent(marks.front());
+        }
         inline static TitleRenderInterface renderer_;
         Rml::Context* context_ = nullptr;
         Rml::ElementDocument* document_ = nullptr;
@@ -389,6 +449,22 @@ namespace {
                                             .scancode = SDL_SCANCODE_DOWN,
                                             .dispatch = &dispatch}});
         EXPECT_EQ(RmlMenuBarTestAccess::path(bar_, 0), 1);
+    }
+
+    TEST_F(MenuBarTitleTest, HeldArrowKeysRepeatButOtherKeysActOnce) {
+        using Item = lfs::vis::gui::MenuItemDesc;
+        using Type = Item::Type;
+        const std::vector<Item> items{
+            {.type = Type::Item, .label = "One", .callback_index = 1},
+            {.type = Type::Item, .label = "Two", .callback_index = 2},
+            {.type = Type::Item, .label = "Three", .callback_index = 3},
+        };
+        RmlMenuBarTestAccess::dropdown(bar_, items);
+        RmlMenuBarTestAccess::heldKey(bar_, SDL_SCANCODE_DOWN);
+        RmlMenuBarTestAccess::heldKey(bar_, SDL_SCANCODE_DOWN);
+        EXPECT_EQ(RmlMenuBarTestAccess::path(bar_, 0), 2);
+        RmlMenuBarTestAccess::heldKey(bar_, SDL_SCANCODE_RETURN);
+        EXPECT_TRUE(bar_.isOpen());
     }
 
     TEST_F(MenuBarTitleTest, KeyboardNavigationSequences) {
@@ -752,11 +828,10 @@ namespace {
             expectImmediateSelection(button);
     }
 
-    TEST_F(MenuBarToolbarTest, WindowControlsKeepTheirHoverTransition) {
+    TEST_F(MenuBarToolbarTest, WindowControlsUseImmediateHoverFeedback) {
         for (const auto* id : {"menu-window-minimize", "menu-window-maximize", "menu-window-close"}) {
             const auto transition = el(id)->GetProperty("transition")->ToString();
-            EXPECT_NE(transition.find("background-color"), std::string::npos);
-            EXPECT_NE(transition.find("0.12s"), std::string::npos);
+            EXPECT_EQ(transition, "none");
         }
     }
 
@@ -826,6 +901,53 @@ namespace {
         input.screen_w = 1600;
         bar_.processInput(input);
         EXPECT_FLOAT_EQ(bar_.barHeight(), 30);
+    }
+
+    TEST_F(MenuBarTitleTest, GermanToolsStayOnTheTitleRowAt1100) {
+        auto* body = el("body");
+        auto* portal = el("menu-portal-connection");
+        Rml::Element* portal_label = nullptr;
+        for (int i = 0; i < portal->GetNumChildren(); ++i) {
+            if (portal->GetChild(i)->GetTagName() == "span")
+                portal_label = portal->GetChild(i);
+        }
+        ASSERT_NE(portal_label, nullptr);
+        const auto layout_at = [&](int width) {
+            context_->SetDimensions({width, 700});
+            context_->Update();
+            RmlMenuBarTestAccess::toolbarLayout(bar_, width, 1.0f);
+            context_->Update();
+        };
+
+        bar_.updateLabels({"Datei", "Bearbeiten", "Auswahl", "Werkzeuge", "Ansicht", "Hilfe"},
+                          {"file", "edit", "select", "tools", "view", "help"});
+        bar_.updateProjectDisplay("Untitled", "/projects/scene.licht", false);
+        RmlMenuBarTestAccess::portalLabel(bar_, "Portal: Nicht verbunden");
+        RmlMenuBarTestAccess::fullToolbar(bar_);
+        layout_at(1100);
+        EXPECT_FALSE(el("menu-toolbar")->IsClassSet("second-row"));
+        EXPECT_FLOAT_EQ(RmlMenuBarTestAccess::heightDp(bar_), 30);
+        EXPECT_FLOAT_EQ(bounds(el("menu-toolbar")).top, 0);
+        EXPECT_TRUE(body->IsClassSet("toolbar-squeeze"));
+        EXPECT_FALSE(portal_label->IsVisible());
+        EXPECT_TRUE(el("menu-window-maximize")->IsVisible());
+        EXPECT_LT(bounds(el("toolbar-test-0")).bottom, 30.5f);
+        EXPECT_GT(bounds(el("toolbar-test-10")).right, bounds(el("menu-items")).right);
+
+        layout_at(1600);
+        EXPECT_FALSE(body->IsClassSet("toolbar-squeeze"));
+        EXPECT_FALSE(el("menu-toolbar")->IsClassSet("second-row"));
+        EXPECT_TRUE(portal_label->IsVisible());
+        EXPECT_FLOAT_EQ(bounds(el("menu-toolbar")).top, 0);
+
+        bar_.updateLabels({"File", "Edit", "Select", "Tools", "View", "Help"},
+                          {"file", "edit", "select", "tools", "view", "help"});
+        RmlMenuBarTestAccess::portalLabel(bar_, "Portal: Not connected");
+        layout_at(1100);
+        EXPECT_FALSE(body->IsClassSet("toolbar-squeeze"));
+        EXPECT_FALSE(el("menu-toolbar")->IsClassSet("second-row"));
+        EXPECT_TRUE(portal_label->IsVisible());
+        EXPECT_FLOAT_EQ(RmlMenuBarTestAccess::heightDp(bar_), 30);
     }
 
     TEST_F(MenuBarTitleTest, WideToolbarKeepsOriginalPlacementAndUpdateCost) {
@@ -1045,6 +1167,32 @@ namespace {
         }
     }
 
+    TEST_F(MenuBarTitleTest, SettingHelpOnlyAppearsOverItsLabel) {
+        auto* row = document_->CreateElement("div").release();
+        row->SetClass("setting-row", true);
+        row->SetAttribute("title", "Setting help");
+        row->SetInnerRML("<span class=\"setting-row__label-col\"><span>Label</span></span>"
+                         "<div class=\"setting-row__control-col\"><input type=\"text\" /></div>");
+        document_->AppendChild(Rml::ElementPtr(row));
+        auto* label = row->GetChild(0);
+        auto* control = row->GetChild(1)->GetChild(0);
+        EXPECT_EQ(resolveRmlTooltip(label->GetChild(0)), "Setting help");
+        EXPECT_TRUE(resolveRmlTooltip(control).empty());
+        EXPECT_TRUE(resolveRmlTooltip(row).empty());
+        control->SetAttribute("title", "Control help");
+        EXPECT_EQ(resolveRmlTooltip(control), "Control help");
+        label->SetClass("setting-row__label-col", false);
+        label->SetClass("prop-label", true);
+        EXPECT_EQ(lfs::vis::gui::propertyTooltipTarget(row), label);
+        EXPECT_EQ(lfs::vis::gui::propertyTooltipTarget(control), control);
+        EXPECT_EQ(resolveRmlTooltip(label->GetChild(0)), "Setting help");
+        EXPECT_TRUE(resolveRmlTooltip(row).empty());
+        control->RemoveAttribute("title");
+        EXPECT_TRUE(resolveRmlTooltip(control).empty());
+        label->SetClass("prop-label", false);
+        EXPECT_EQ(lfs::vis::gui::propertyTooltipTarget(row), nullptr);
+    }
+
     TEST_F(MenuBarTitleTest, ShortcutTooltipTracksBindingAndUnbinding) {
         using namespace lfs::vis::input;
         EXPECT_EQ(toolModeFromName("global"), ToolMode::GLOBAL);
@@ -1122,6 +1270,91 @@ namespace {
         ASSERT_TRUE(Rml::RemoveContext("menu_bar_title_viewport"));
     }
 
+    TEST_F(MenuBarTitleTest, PointerEventsAreScopedToTheMainWindowAndPressResumesInput) {
+        RmlMenuBarTestAccess::keepContextHeight(bar_);
+        auto* button = el("menu-items")->GetChild(0);
+        ASSERT_NE(button, nullptr);
+        auto rect = bounds(button);
+        lfs::vis::gui::PanelInputState input{};
+        input.screen_w = 1600;
+        input.screen_h = 300;
+        input.mouse_x = (rect.left + rect.right) / 2;
+        input.mouse_y = (rect.top + rect.bottom) / 2;
+        bar_.processInput(input);
+        context_->Update();
+        ASSERT_TRUE(button->IsPseudoClassSet("hover"));
+        SDL_Event event{};
+        event.type = SDL_EVENT_WINDOW_MOUSE_LEAVE;
+        event.window.windowID = 2;
+        bar_.onWindowPointerEvent(event, 1);
+        bar_.processInput(input);
+        context_->Update();
+        EXPECT_TRUE(button->IsPseudoClassSet("hover"));
+        RmlMenuBarTestAccess::windowFocusLost(bar_);
+        event.type = SDL_EVENT_MOUSE_MOTION;
+        event.motion.windowID = 2;
+        bar_.onWindowPointerEvent(event, 1);
+        bar_.processInput(input);
+        context_->Update();
+        EXPECT_FALSE(button->IsPseudoClassSet("hover"));
+        event.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+        event.button.windowID = 1;
+        bar_.onWindowPointerEvent(event, 1);
+        rect = bounds(button);
+        input.mouse_x = (rect.left + rect.right) / 2;
+        input.mouse_y = (rect.top + rect.bottom) / 2;
+        event.button.button = SDL_BUTTON_LEFT;
+        event.button.down = true;
+        event.button.x = input.mouse_x;
+        event.button.y = input.mouse_y;
+        manager_.dispatchInputEvent(event);
+        context_->Update();
+        EXPECT_TRUE(bar_.isOpen());
+    }
+
+    TEST_F(MenuBarTitleTest, RestoreBackKeepsItsOriginalOuterExtent) {
+        auto* back = document_->QuerySelector(".window-restore-back");
+        ASSERT_NE(back, nullptr);
+        EXPECT_EQ(back->GetProperty("width")->ToString(), "11dp");
+        EXPECT_EQ(back->GetProperty("height")->ToString(), "11dp");
+    }
+
+    TEST_F(MenuBarTitleTest, LosingWindowFocusClearsPointerFeedback) {
+        RmlMenuBarTestAccess::keepContextHeight(bar_);
+        auto* button = el("menu-window-close");
+        ASSERT_NE(button, nullptr);
+        const auto rect = bounds(button);
+        context_->ProcessMouseMove(static_cast<int>((rect.left + rect.right) / 2),
+                                   static_cast<int>((rect.top + rect.bottom) / 2), 0);
+        context_->Update();
+        ASSERT_TRUE(button->IsPseudoClassSet("hover"));
+        RmlMenuBarTestAccess::setRenderNeeded(bar_, false);
+        RmlMenuBarTestAccess::windowFocusLost(bar_);
+        context_->Update();
+        EXPECT_FALSE(button->IsPseudoClassSet("hover"));
+        EXPECT_TRUE(RmlMenuBarTestAccess::renderNeeded(bar_));
+        EXPECT_FALSE(RmlMenuBarTestAccess::tooltip(bar_).needsFrame());
+        const lfs::vis::gui::PanelInputState input{.mouse_x = (rect.left + rect.right) / 2,
+                                                   .mouse_y = (rect.top + rect.bottom) / 2,
+                                                   .screen_w = 1600,
+                                                   .screen_h = 300};
+        bar_.processInput(input);
+        context_->Update();
+        EXPECT_FALSE(button->IsPseudoClassSet("hover"));
+        const auto resumed_rect = bounds(button);
+        auto moved_input = input;
+        moved_input.mouse_x = (resumed_rect.left + resumed_rect.right) / 2;
+        moved_input.mouse_y = (resumed_rect.top + resumed_rect.bottom) / 2;
+        bar_.onPointerMotion();
+        bar_.processInput(moved_input);
+        context_->Update();
+        EXPECT_TRUE(button->IsPseudoClassSet("hover"));
+        bar_.onPointerLeave();
+        bar_.processInput(input);
+        context_->Update();
+        EXPECT_FALSE(button->IsPseudoClassSet("hover"));
+    }
+
     TEST_F(MenuBarTitleTest, TooltipPreservesFullPathAsTextIncludingMarkupCharacters) {
         const std::filesystem::path path =
             std::filesystem::path{"/projects"} / "long folder" / "<b>scan &amp; capture.licht";
@@ -1143,5 +1376,183 @@ namespace {
         EXPECT_TRUE(rendered->IsVisible());
         EXPECT_EQ(rendered->QuerySelector("b"), nullptr);
         EXPECT_EQ(textContent(rendered), expected_path);
+    }
+
+    TEST_F(MenuBarTitleTest, AccessKeys) {
+        using Item = lfs::vis::gui::MenuItemDesc;
+        using Type = Item::Type;
+        RmlMenuBarTestAccess::altTap(bar_);
+        RmlMenuBarTestAccess::key(bar_, SDL_SCANCODE_DOWN);
+        const auto opened_by_down = menuKeyState();
+        RmlMenuBarTestAccess::key(bar_, SDL_SCANCODE_ESCAPE);
+
+        EXPECT_FALSE(RmlMenuBarTestAccess::accessVisible(bar_));
+        EXPECT_FALSE(RmlMenuBarTestAccess::keyEvent(bar_, lfs::vis::FrameInputEventKind::KeyDown, SDL_SCANCODE_LALT));
+        EXPECT_TRUE(RmlMenuBarTestAccess::accessVisible(bar_));
+        EXPECT_TRUE(RmlMenuBarTestAccess::letterKey(bar_, SDLK_F, SDL_KMOD_LALT));
+        EXPECT_EQ(menuKeyState(), opened_by_down);
+        const auto opened = menuKeyState();
+        EXPECT_FALSE(RmlMenuBarTestAccess::letterKey(bar_, SDLK_F, SDL_KMOD_LALT, true));
+        EXPECT_EQ(menuKeyState(), opened);
+        RmlMenuBarTestAccess::key(bar_, SDL_SCANCODE_ESCAPE);
+
+        RmlMenuBarTestAccess::altTap(bar_);
+        EXPECT_TRUE(RmlMenuBarTestAccess::accessVisible(bar_));
+        EXPECT_TRUE(RmlMenuBarTestAccess::letterKey(bar_, SDLK_F));
+        EXPECT_EQ(menuKeyState(), opened_by_down);
+        RmlMenuBarTestAccess::key(bar_, SDL_SCANCODE_ESCAPE);
+        EXPECT_FALSE(RmlMenuBarTestAccess::accessVisible(bar_));
+
+        RmlMenuBarTestAccess::dropdown(bar_, {{.type = Type::Item, .label = "About", .callback_index = 7},
+                                              {.type = Type::Item, .label = "Preferences", .callback_index = 8}});
+        EXPECT_TRUE(RmlMenuBarTestAccess::letterKey(bar_, SDLK_P));
+        EXPECT_FALSE(bar_.isOpen());
+
+        RmlMenuBarTestAccess::dropdown(bar_, {{.type = Type::Item, .label = "X", .callback_index = 1},
+                                              {.type = Type::Item, .label = "X", .callback_index = 2},
+                                              {.type = Type::Item, .label = "Other", .callback_index = 3}});
+        EXPECT_TRUE(RmlMenuBarTestAccess::letterKey(bar_, SDLK_X));
+        EXPECT_TRUE(bar_.isOpen());
+        EXPECT_EQ(RmlMenuBarTestAccess::path(bar_, 0), 1);
+        EXPECT_TRUE(RmlMenuBarTestAccess::letterKey(bar_, SDLK_X));
+        EXPECT_EQ(RmlMenuBarTestAccess::path(bar_, 0), 0);
+        RmlMenuBarTestAccess::key(bar_, SDL_SCANCODE_RETURN);
+        EXPECT_FALSE(bar_.isOpen());
+
+        RmlMenuBarTestAccess::dropdown(
+            bar_, {{.type = Type::SubMenuBegin, .label = "Export"},
+                   {.type = Type::Item, .label = "Image", .callback_index = 4},
+                   {.type = Type::SubMenuEnd}});
+        EXPECT_TRUE(RmlMenuBarTestAccess::letterKey(bar_, SDLK_E));
+        EXPECT_TRUE(bar_.isOpen());
+        EXPECT_EQ(RmlMenuBarTestAccess::depth(bar_), 1);
+        RmlMenuBarTestAccess::key(bar_, SDL_SCANCODE_ESCAPE);
+
+        RmlMenuBarTestAccess::dropdown(bar_, {{.type = Type::Item, .label = "Alpha", .enabled = false, .callback_index = 5},
+                                              {.type = Type::Item, .label = "Beta", .callback_index = 6}});
+        EXPECT_EQ(RmlMenuBarTestAccess::path(bar_, 0), 1);
+        EXPECT_FALSE(RmlMenuBarTestAccess::letterKey(bar_, SDLK_A));
+        EXPECT_TRUE(bar_.isOpen());
+        EXPECT_EQ(RmlMenuBarTestAccess::path(bar_, 0), 1);
+        RmlMenuBarTestAccess::key(bar_, SDL_SCANCODE_ESCAPE);
+
+        EXPECT_FALSE(RmlMenuBarTestAccess::keyEvent(bar_, lfs::vis::FrameInputEventKind::KeyDown, SDL_SCANCODE_RALT));
+        EXPECT_FALSE(RmlMenuBarTestAccess::letterKey(bar_, SDLK_E, SDL_KMOD_RALT | SDL_KMOD_MODE));
+        EXPECT_FALSE(bar_.isOpen());
+        EXPECT_FALSE(RmlMenuBarTestAccess::keyEvent(bar_, lfs::vis::FrameInputEventKind::KeyUp, SDL_SCANCODE_RALT));
+
+        EXPECT_TRUE(RmlMenuBarTestAccess::letterKey(bar_, SDLK_F, SDL_KMOD_RALT));
+        EXPECT_EQ(menuKeyState(), opened_by_down);
+        RmlMenuBarTestAccess::key(bar_, SDL_SCANCODE_ESCAPE);
+
+        bar_.updateLabels({"Cameras"}, {"plugin.Cameras"});
+        context_->Update();
+        {
+            lfs::vis::input::InputBindings::setPersistenceEnabled(false);
+            Viewport viewport(32, 32);
+            lfs::vis::InputController controller(nullptr, viewport);
+            controller.initialize();
+            EXPECT_FALSE(RmlMenuBarTestAccess::keyEvent(bar_, lfs::vis::FrameInputEventKind::KeyDown, SDL_SCANCODE_LALT));
+            EXPECT_FALSE(RmlMenuBarTestAccess::letterKey(bar_, SDLK_C, SDL_KMOD_LALT));
+            EXPECT_FALSE(bar_.isOpen());
+            EXPECT_FALSE(RmlMenuBarTestAccess::keyEvent(bar_, lfs::vis::FrameInputEventKind::KeyUp, SDL_SCANCODE_LALT));
+        }
+        lfs::vis::input::InputBindings::setPersistenceEnabled(true);
+        EXPECT_TRUE(RmlMenuBarTestAccess::letterKey(bar_, SDLK_C, SDL_KMOD_LALT));
+        EXPECT_TRUE(bar_.isOpen());
+        RmlMenuBarTestAccess::key(bar_, SDL_SCANCODE_ESCAPE);
+
+        RmlMenuBarTestAccess::dropdown(bar_, {{.type = Type::Item, .label = "About", .callback_index = 7}});
+        EXPECT_FALSE(RmlMenuBarTestAccess::accessVisible(bar_));
+        EXPECT_FALSE(RmlMenuBarTestAccess::keyEvent(bar_, lfs::vis::FrameInputEventKind::KeyDown, SDL_SCANCODE_LALT));
+        EXPECT_TRUE(RmlMenuBarTestAccess::accessVisible(bar_));
+        RmlMenuBarTestAccess::keyEvent(bar_, lfs::vis::FrameInputEventKind::KeyUp, SDL_SCANCODE_LALT);
+        EXPECT_FALSE(RmlMenuBarTestAccess::accessVisible(bar_));
+        RmlMenuBarTestAccess::key(bar_, SDL_SCANCODE_ESCAPE);
+
+        auto* text_context = Rml::CreateContext("menu-access-text", {200, 80}, &renderer_);
+        ASSERT_NE(text_context, nullptr);
+        auto* text_document = text_context->LoadDocumentFromMemory(
+            "<rml><head><style>body { font-family: Inter; font-size: 14px; } input { width: 120px; height: 24px; }</style></head>"
+            "<body><input type=\"text\" id=\"field\"/></body></rml>");
+        ASSERT_NE(text_document, nullptr);
+        text_document->Show();
+        auto* field = text_document->GetElementById("field");
+        ASSERT_NE(field, nullptr);
+        ASSERT_TRUE(field->Focus());
+        text_context->Update();
+        manager_.activateInput(text_context, [](const lfs::vis::gui::PanelInputState&) {});
+        EXPECT_TRUE(manager_.wantsTextInput());
+        EXPECT_FALSE(RmlMenuBarTestAccess::keyEvent(bar_, lfs::vis::FrameInputEventKind::KeyDown, SDL_SCANCODE_LALT));
+        EXPECT_FALSE(RmlMenuBarTestAccess::letterKey(bar_, SDLK_F, SDL_KMOD_LALT));
+        EXPECT_FALSE(bar_.isOpen());
+        manager_.deactivateInput(text_context);
+        manager_.shutdown();
+        EXPECT_TRUE(Rml::RemoveContext("menu-access-text"));
+    }
+
+    TEST_F(MenuBarTitleTest, AccessKeyAssignment) {
+        using Item = lfs::vis::gui::MenuItemDesc;
+        using Type = Item::Type;
+        RmlMenuBarTestAccess::dropdown(bar_, {{.type = Type::Item, .label = "Öffnen", .callback_index = 1},
+                                              {.type = Type::Item, .label = "Speichern", .callback_index = 2},
+                                              {.type = Type::Item, .label = "Schließen", .callback_index = 3},
+                                              {.type = Type::Item, .label = "ファイル", .callback_index = 4},
+                                              {.type = Type::Item, .label = "A < B & C", .callback_index = 5},
+                                              {.type = Type::Item, .label = "X", .callback_index = 6},
+                                              {.type = Type::Item, .label = "X", .enabled = false, .callback_index = 7}});
+        EXPECT_EQ(accessMark(rowByCallback(1)), "f");
+        EXPECT_EQ(accessMark(rowByCallback(2)), "S");
+        EXPECT_EQ(accessMark(rowByCallback(3)), "c");
+        EXPECT_EQ(textContent(rowByCallback(4)), "ファイル");
+        EXPECT_TRUE(accessMark(rowByCallback(4)).empty());
+        auto* markup = rowByCallback(5);
+        EXPECT_EQ(accessMark(markup), "A");
+        EXPECT_NE(textContent(markup).find('<'), std::string::npos);
+        EXPECT_NE(textContent(markup).find('&'), std::string::npos);
+        EXPECT_EQ(markup->QuerySelector("b"), nullptr);
+        EXPECT_EQ(accessMark(rowByCallback(6)), "X");
+        EXPECT_EQ(accessMark(rowByCallback(7)), "X");
+
+        bar_.updateLabels({"ファイル", "編集"},
+                          {"lfs_plugins.file_menu.FileMenu", "lfs_plugins.edit_menu.EditMenu"});
+        context_->Update();
+        auto* file = el("menu-items")->GetChild(0);
+        ASSERT_NE(file, nullptr);
+        EXPECT_EQ(textContent(file), "ファイル(F)");
+        Rml::ElementList marks;
+        file->GetElementsByClassName(marks, "access-key");
+        ASSERT_EQ(marks.size(), 1u);
+        EXPECT_EQ(textContent(marks.front()), "F");
+    }
+
+    TEST(MenuAccessKeyLocales, LettersAreUniqueAndNotAltBound) {
+        const auto locales = std::filesystem::path(PROJECT_ROOT_PATH) / "src/visualizer/gui/resources/locales";
+        const auto profile = lfs::vis::input::InputBindings::createDefaultProfile();
+        const char* ids[] = {"file", "edit", "select", "tools", "view", "help"};
+        for (const auto& entry : std::filesystem::directory_iterator(locales)) {
+            if (entry.path().extension() != ".json")
+                continue;
+            const auto json = nlohmann::json::parse(std::ifstream(entry.path()));
+            std::string seen;
+            for (const char* id : ids) {
+                const auto key = std::string("access_key.") + id;
+                ASSERT_TRUE(json.contains("menu") && json["menu"].contains(key)) << entry.path().filename() << " " << key;
+                const auto value = json["menu"][key].get<std::string>();
+                ASSERT_EQ(value.size(), 1u) << entry.path().filename() << " " << value;
+                const char letter = value[0];
+                ASSERT_TRUE(letter >= 'A' && letter <= 'Z') << entry.path().filename() << " " << value;
+                ASSERT_EQ(seen.find(letter), std::string::npos) << entry.path().filename() << " " << letter;
+                seen.push_back(letter);
+                constexpr int kModifierMask = lfs::vis::input::MODIFIER_SHIFT | lfs::vis::input::MODIFIER_CTRL |
+                                              lfs::vis::input::MODIFIER_ALT | lfs::vis::input::MODIFIER_SUPER;
+                for (const auto& binding : profile.bindings) {
+                    const auto* trigger = std::get_if<lfs::vis::input::KeyTrigger>(&binding.trigger);
+                    if (trigger && trigger->key == static_cast<int>(letter) &&
+                        (trigger->modifiers & kModifierMask) == lfs::vis::input::MODIFIER_ALT)
+                        FAIL() << entry.path().filename().string() << " Alt+" << letter;
+                }
+            }
+        }
     }
 } // namespace

@@ -4569,7 +4569,7 @@ namespace lfs::python {
         m.def(
             "merge_group",
             [](const std::string& name) { lfs::core::events::cmd::MergeGroup{.name = name}.emit(); },
-            nb::arg("name"), "Merge group children into a single PLY");
+            nb::arg("name"), "Merge group children into a single model");
 
         m.def(
             "save_node_to_disk",
@@ -5209,6 +5209,8 @@ namespace lfs::python {
             },
             "Get available theme presets with stable ids and UI metadata");
 
+        m.def("get_native_floating_windows", [] { return vis::UserPreferences::instance().nativeFloatingWindows(); }, "Whether floating panels use native windows on the next application start.");
+        m.def("set_native_floating_windows", [](bool enabled) { vis::UserPreferences::instance().setNativeFloatingWindows(enabled); }, nb::arg("enabled"), "Save the experimental window mode. Requires an application restart.");
         m.def(
             "set_ui_scale",
             [](float scale) {

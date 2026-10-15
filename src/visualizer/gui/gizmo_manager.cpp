@@ -131,8 +131,8 @@ namespace lfs::vis::gui {
 
         constexpr float VIEWPORT_GIZMO_DISTANCE = 2.8f;
         constexpr float VIEWPORT_GIZMO_FOV_DEGREES = 38.0f;
-        constexpr float VIEWPORT_GIZMO_SPHERE_RADIUS = 0.198f;
-        constexpr float VIEWPORT_GIZMO_LABEL_DISTANCE = 0.63f;
+        constexpr float VIEWPORT_GIZMO_SPHERE_RADIUS = VIEWPORT_AXIS_MARKER_RADIUS;
+        constexpr float VIEWPORT_GIZMO_LABEL_DISTANCE = VIEWPORT_AXIS_MARKER_DISTANCE;
 
         [[nodiscard]] float viewportGizmoUiScale() {
             return std::max(1.0f, lfs::python::get_shared_dpi_scale());
@@ -980,6 +980,9 @@ namespace lfs::vis::gui {
         if (!sm->canApplyCropToNode(crop_tool_target_node_id_))
             return;
 
+        // Committing the volume, cropping and removing the volume are one user action,
+        // so a single undo restores the splat and the volume.
+        op::TransactionGuard transaction(crop_tool_shape_ == CropToolShape::Box ? "Crop Box" : "Crop Ellipsoid");
         if (!persistActiveCropToolToNode(true))
             return;
 
@@ -1011,6 +1014,7 @@ namespace lfs::vis::gui {
         }
         triggerCropFlash();
         deleteCropVolumeAfterApply(applied_volume_node_id);
+        transaction.commit();
     }
 
     void GizmoManager::deleteActiveCropToolVolume() {
@@ -1338,8 +1342,12 @@ namespace lfs::vis::gui {
         stamp.selection_mode = selection_mode_;
         if (stamp == last_tool_state_stamp_)
             return;
+        const bool exact_depth_changed = (last_tool_state_stamp_.active_tool_id == "builtin.align") !=
+                                         (active_tool_id == "builtin.align");
         last_tool_state_stamp_ = stamp;
         resetIdleGizmoHover();
+        if (rendering_manager && exact_depth_changed)
+            rendering_manager->markDirty(DirtyFlag::VIEWPORT, FrameReason::SettingsChange);
 
         if (rendering_manager)
             rendering_manager->setGaussianSelectionVisible(is_selection_mode);
@@ -3157,7 +3165,7 @@ namespace lfs::vis::gui {
         const float mouse_x = frame_input.mouse_x;
         const float mouse_y = frame_input.mouse_y;
         const float ui_scale = viewportGizmoUiScale();
-        const float gizmo_size = VIEWPORT_GIZMO_SIZE * ui_scale;
+        const float gizmo_size = VIEWPORT_AXIS_WIDGET_SIZE * ui_scale;
         const float gizmo_margin_x = VIEWPORT_GIZMO_MARGIN_X * ui_scale;
         const float gizmo_margin_y = VIEWPORT_GIZMO_MARGIN_Y * ui_scale;
 
@@ -3545,7 +3553,7 @@ namespace lfs::vis::gui {
         const auto vp_size = viewer_->getGuiManager()->getViewportSize();
         const auto panels = collectViewportGizmoPanels(viewer_, vp_pos, vp_size);
         const float ui_scale = viewportGizmoUiScale();
-        const float gizmo_size = VIEWPORT_GIZMO_SIZE * ui_scale;
+        const float gizmo_size = VIEWPORT_AXIS_WIDGET_SIZE * ui_scale;
         const float gizmo_margin_x = VIEWPORT_GIZMO_MARGIN_X * ui_scale;
         const float gizmo_margin_y = VIEWPORT_GIZMO_MARGIN_Y * ui_scale;
         for (const auto& panel : panels) {

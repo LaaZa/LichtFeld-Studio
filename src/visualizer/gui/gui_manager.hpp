@@ -133,9 +133,11 @@ namespace lfs::vis {
             void setRmlResizeDeferring(bool defer) { rmlui_manager_.setResizeDeferring(defer); }
             void prepareInput();
             void prepareLayout();
-            RmlUIManager::InputDispatchResult dispatchInputEvent(const SDL_Event& event) {
-                return rmlui_manager_.dispatchInputEvent(event);
+            bool processNativeWindowEvent(const SDL_Event& event) { return rmlui_manager_.processNativeWindowEvent(event); }
+            bool requestNativeWindowCapture(const std::string& panel_id, std::function<void(lfs::Result<VulkanContext::WindowCapture>)> callback) {
+                return rmlui_manager_.requestNativeWindowCapture(panel_id, std::move(callback));
             }
+            RmlUIManager::InputDispatchResult dispatchInputEvent(const SDL_Event& event);
             void ensureCjkFontsLoaded() { rmlui_manager_.ensureCjkFontsLoaded(); }
 
             // Sub-manager access

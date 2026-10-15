@@ -400,6 +400,10 @@ def get_panel_names(space: PanelSpace = PanelSpace.FLOATING) -> list[str]:
 def set_panel_enabled(panel_id: str, enabled: bool) -> None:
     """Enable or disable a panel by id"""
 
+def save_startup_sidebar() -> bool:
+    """Save the right sidebar as a startup default; .licht GUIL overrides it."""
+def clear_startup_sidebar() -> None:
+    """Clear startup sidebar defaults without changing the current workspace."""
 def reset_layout() -> str:
     """
     Reset the saved UI layout and apply the default dock arrangement immediately.
@@ -2368,7 +2372,7 @@ def duplicate_node(name: str) -> None:
     """Duplicate a node and its children"""
 
 def merge_group(name: str) -> None:
-    """Merge group children into a single PLY"""
+    """Merge group children into a single model"""
 
 def save_node_to_disk(node_name: str) -> None:
     """
@@ -2719,6 +2723,14 @@ def supports_system_theme() -> bool:
 
 def themes() -> list:
     """Get available theme presets with stable ids and UI metadata"""
+
+def get_native_floating_windows() -> bool:
+    """
+    Whether floating panels use native windows on the next application start.
+    """
+
+def set_native_floating_windows(enabled: bool) -> None:
+    """Save the experimental window mode. Requires an application restart."""
 
 def set_ui_scale(scale: float) -> None:
     """Set UI scale (0.0 = auto from OS, or 1.0-4.0)"""

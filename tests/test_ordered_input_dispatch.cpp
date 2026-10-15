@@ -48,6 +48,7 @@
 #include <RmlUi/Core/Elements/ElementFormControlSelect.h>
 #include <SDL3/SDL.h>
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <future>
@@ -56,6 +57,15 @@
 #include <set>
 #include <thread>
 #include <vector>
+#ifndef _WIN32
+#include <cstdlib>
+#endif
+
+#ifndef _WIN32
+namespace lfs_test_lsp {
+    std::filesystem::path write_mock_lsp_server();
+}
+#endif
 
 namespace lfs::vis {
     namespace {
@@ -512,6 +522,40 @@ namespace lfs::vis {
         EXPECT_EQ(editor.getText(), "£x");
         view->setEditor(nullptr);
     }
+
+    TEST_F(RmlPointerReplayTest, DotOffersCompletionAfterThePanelConsumesTheEdit) {
+#ifdef _WIN32
+        GTEST_SKIP() << "Mock language server fixture is POSIX-only.";
+#else
+        const auto script = lfs_test_lsp::write_mock_lsp_server();
+        setenv("LFS_PYTHON_LSP", script.c_str(), 1);
+        setenv("LFS_PYTHON_LSP_WORKSPACE", (script.parent_path() / "workspace").c_str(), 1);
+        static Rml::ElementInstancerGeneric<gui::PythonEditorElement> instancer;
+        Rml::Factory::RegisterElementInstancer("python-editor", &instancer);
+        editor::PythonEditor editor;
+        auto element = document_->CreateElement("python-editor");
+        auto* view = dynamic_cast<gui::PythonEditorElement*>(element.get());
+        ASSERT_NE(view, nullptr);
+        view->setEditor(&editor);
+        document_->AppendChild(std::move(element));
+        context_->Update();
+        ASSERT_TRUE(view->Focus());
+        for (const char* piece : {"l", "f", "."})
+            gui::rml_input::processKeyboardEvent(*context_, {.kind = FrameInputEventKind::Text, .text = piece});
+        EXPECT_EQ(editor.getText(), "lf.");
+        // The docked console consumes the edit before the deferred Rml render.
+        EXPECT_TRUE(editor.consumeTextChanged());
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (!editor.hasActiveCompletion() && std::chrono::steady_clock::now() < deadline) {
+            editor.renderRml(*view, 200.0f, 80.0f, 14.0f);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        EXPECT_TRUE(editor.hasActiveCompletion());
+        view->setEditor(nullptr);
+        unsetenv("LFS_PYTHON_LSP");
+        unsetenv("LFS_PYTHON_LSP_WORKSPACE");
+#endif
+    }
 } // namespace lfs::vis
 
 namespace lfs::vis {
@@ -584,6 +628,21 @@ namespace lfs::vis {
             gui::guiFocusState().reset();
         }
         gui::RmlUIManager& manager() { return gui_->rmlui_manager_; }
+        bool hasDesktopHost(const Rml::Context* context) { return manager().native_windows_.contains(context); }
+        void failExternalGraphics(int& attempts) {
+            manager().native_windows_enabled_ = true;
+            manager().create_native_graphics_ = [&attempts]() -> std::unique_ptr<VulkanContext> {
+                ++attempts;
+                return nullptr;
+            };
+        }
+        void setKeyboardContext(Rml::Context* context, bool external_enabled) {
+            manager().keyboard_context_ = context;
+            manager().native_windows_enabled_ = external_enabled;
+        }
+        void mapContextWindow(Rml::Context* context, SDL_Window* window) {
+            manager().context_windows_[context] = window;
+        }
         void attachInputHost(gui::RmlPanelHost& host, int width, int height, const char* markup) {
             // Input uses the real host and null geometry renderer, without a GPU frame.
             manager().vulkan_render_interface_ = &input_renderer_;
@@ -1188,6 +1247,141 @@ namespace lfs::vis {
         uint64_t timestamp_ = 0;
         gui::rml_input::TextInputEscapeRevertController revert_;
     };
+
+    TEST_F(WindowInputDispatchTest, MainWindowFocusLossPreservesFocusedFieldWithExternalWindowsOnOrOff) {
+        for (const bool enabled : {false, true}) {
+            SCOPED_TRACE(enabled);
+            ASSERT_TRUE(field_->Focus());
+            field_->SetValue("half-typed");
+            setKeyboardContext(context_, enabled);
+            SDL_Event event{};
+            event.type = SDL_EVENT_WINDOW_FOCUS_LOST;
+            event.window.windowID = SDL_GetWindowID(window_->getWindow());
+            manager().dispatchInputEvent(event);
+            EXPECT_EQ(context_->GetFocusElement(), field_);
+            EXPECT_EQ(field_->GetValue(), "half-typed");
+        }
+    }
+
+    TEST_F(WindowInputDispatchTest, UnvalidatedPanelsCannotCreateExternalHosts) {
+        int attempts = 0;
+        failExternalGraphics(attempts);
+        for (const auto* name : {"lfs.asset_manager", "lfs.histogram", "plugin.custom", "modal"}) {
+            auto* context = manager().createContext(name, 400, 300, true);
+            ASSERT_NE(context, nullptr);
+            EXPECT_FALSE(hasDesktopHost(context));
+            EXPECT_TRUE(manager().externalWindowsAllowed());
+            manager().destroyContext(name);
+        }
+        EXPECT_EQ(attempts, 0);
+        EXPECT_TRUE(gui::RmlUIManager::validatedExternalPanel("lfs.preferences"));
+        EXPECT_TRUE(gui::RmlUIManager::validatedExternalPanel("lfs.plugin_marketplace"));
+        EXPECT_TRUE(gui::RmlUIManager::validatedExternalPanel("video_extractor"));
+    }
+
+    TEST_F(WindowInputDispatchTest, FailedExternalHostDisablesFurtherAttemptsForTheSession) {
+        int attempts = 0;
+        failExternalGraphics(attempts);
+        auto* first = manager().createContext("video_extractor", 400, 300, true);
+        ASSERT_NE(first, nullptr);
+        EXPECT_FALSE(hasDesktopHost(first));
+        EXPECT_FALSE(manager().externalWindowsAllowed());
+        for (int frame = 0; frame < 10; ++frame) {
+            const std::string name = "lfs.preferences";
+            auto* fallback = manager().createContext(name, 400, 300, true);
+            ASSERT_NE(fallback, nullptr);
+            EXPECT_FALSE(hasDesktopHost(fallback));
+            EXPECT_FALSE(manager().externalWindowsAllowed());
+            manager().destroyContext(name);
+        }
+        EXPECT_EQ(attempts, 1);
+        manager().destroyContext("video_extractor");
+    }
+
+    TEST_F(WindowInputDispatchTest, SecondaryWindowMouseDoesNotReachMainWindowContext) {
+        auto* secondary = SDL_CreateWindow("Secondary input", 400, 300, SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+        ASSERT_NE(secondary, nullptr);
+        auto* context = manager().createContext("secondary-input", 400, 300);
+        ASSERT_NE(context, nullptr);
+        mapContextWindow(context, secondary);
+        int main_presses = 0;
+        int secondary_presses = 0;
+        float secondary_x = 0.0f;
+        float press_x = 0.0f;
+        manager().routeInput(context_, {}, [&](const gui::PanelInputState& input) {
+            main_presses += static_cast<int>(input.mouse_button_events.size());
+        });
+        manager().routeInput(context, {}, [&](const gui::PanelInputState& input) {
+            secondary_presses += static_cast<int>(input.mouse_button_events.size());
+            if (!input.mouse_button_events.empty()) {
+                secondary_x = input.mouse_x;
+                press_x = input.mouse_button_events.front().x;
+            }
+        });
+        SDL_Event event{};
+        event.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+        event.button.windowID = SDL_GetWindowID(secondary);
+        event.button.button = SDL_BUTTON_LEFT;
+        event.button.x = event.button.y = 20;
+        manager().dispatchInputEvent(event);
+        EXPECT_EQ(main_presses, 0);
+        EXPECT_EQ(secondary_presses, 1);
+        const auto scale = input::windowPixelScale(secondary);
+        EXPECT_FLOAT_EQ(secondary_x, 20 * scale.x);
+        EXPECT_FLOAT_EQ(press_x, 20 * scale.x);
+        manager().destroyContext("secondary-input");
+        SDL_DestroyWindow(secondary);
+    }
+
+    TEST_F(WindowInputDispatchTest, MainWindowTextCannotReachSecondaryExclusiveContext) {
+        auto* secondary = SDL_CreateWindow("Secondary keyboard", 400, 300, SDL_WINDOW_HIDDEN);
+        ASSERT_NE(secondary, nullptr);
+        auto* context = manager().createContext("secondary-keyboard", 400, 300);
+        ASSERT_NE(context, nullptr);
+        mapContextWindow(context, secondary);
+        int text_events = 0;
+        manager().activateInput(context, [&](const gui::PanelInputState& input) {
+            text_events += static_cast<int>(input.input_events.size());
+        });
+        SDL_Event event{};
+        event.type = SDL_EVENT_TEXT_INPUT;
+        event.text.windowID = SDL_GetWindowID(window_->getWindow());
+        event.text.text = "main only";
+        manager().dispatchInputEvent(event);
+        EXPECT_EQ(text_events, 0);
+        event.text.windowID = SDL_GetWindowID(secondary);
+        manager().dispatchInputEvent(event);
+        EXPECT_EQ(text_events, 1);
+        manager().destroyContext("secondary-keyboard");
+        SDL_DestroyWindow(secondary);
+    }
+
+    TEST_F(WindowInputDispatchTest, EmbeddedPointerCoordinatesConvertToPixelsOnlyOnce) {
+        context_->SetDensityIndependentPixelRatio(2.0f);
+        float move_x = -1, press_x = -1;
+        manager().routeInput(context_, {}, [&](const gui::PanelInputState& input) {
+            move_x = input.mouse_x;
+            if (!input.mouse_button_events.empty())
+                press_x = input.mouse_button_events.front().x;
+        });
+        SDL_Event event{};
+        event.type = SDL_EVENT_MOUSE_MOTION;
+        event.motion.windowID = SDL_GetWindowID(window_->getWindow());
+        event.motion.x = 37;
+        event.motion.y = 23;
+        manager().dispatchInputEvent(event);
+        const auto scale = input::windowPixelScale(window_->getWindow());
+        EXPECT_FLOAT_EQ(move_x, 37 * scale.x);
+        event = {};
+        event.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+        event.button.windowID = SDL_GetWindowID(window_->getWindow());
+        event.button.button = SDL_BUTTON_LEFT;
+        event.button.x = 37;
+        event.button.y = 23;
+        manager().dispatchInputEvent(event);
+        EXPECT_FLOAT_EQ(move_x, 37 * scale.x);
+        EXPECT_FLOAT_EQ(press_x, 37 * scale.x);
+    }
 
     TEST_F(WindowInputDispatchTest, NodeDeletionPreservesTransformToolThroughReselectionAndHistory) {
         auto& sm = *viewer_->getSceneManager();
@@ -1913,6 +2107,32 @@ namespace lfs::vis {
         chart->RemoveEventListener("click", &recorder);
     }
 
+    TEST_F(WindowInputDispatchTest, FloatingCloseButtonDisablesItsPanel) {
+        gui::RmlPanelHost host(&manager(), "test.input_float", "");
+        attachInputHost(host, 180, 100,
+                        "<rml><head><style>body { width:180px; height:100px; }</style></head>"
+                        "<body id='window-frame'><div id='title-bar'><span id='close-btn'>x</span></div>"
+                        "<div id='body'>log</div></body></rml>");
+        host.setFloating(true);
+        host.getContext()->Update();
+        registerInputFloat();
+        forwardHost(host, 100, 60);
+        ASSERT_TRUE(gui::PanelRegistry::instance().is_panel_enabled("test.input_float"));
+
+        click(120, 140);
+        EXPECT_TRUE(gui::PanelRegistry::instance().is_panel_enabled("test.input_float"));
+
+        auto* button = host.getDocument()->GetElementById("close-btn");
+        ASSERT_NE(button, nullptr);
+        const auto origin = button->GetAbsoluteOffset(Rml::BoxArea::Border);
+        const auto size = button->GetBox().GetSize(Rml::BoxArea::Border);
+        ASSERT_GT(size.x, 0.f);
+        ASSERT_GT(size.y, 0.f);
+        click(100 + static_cast<int>(origin.x + size.x * 0.5f),
+              60 + static_cast<int>(origin.y + size.y * 0.5f));
+        EXPECT_FALSE(gui::PanelRegistry::instance().is_panel_enabled("test.input_float"));
+    }
+
     TEST_F(WindowInputDispatchTest, FloatingOcclusionPreservesDockedGestureOwnership) {
         gui::RmlPanelHost docked(&manager(), "test-input-drag", "");
         attachInputHost(docked, 400, 300,
@@ -1956,6 +2176,78 @@ namespace lfs::vis {
         EXPECT_EQ(docked.getContext()->GetHoverElement(), chart);
         chart->RemoveEventListener("mousedown", &recorder);
         chart->RemoveEventListener("mouseup", &recorder);
+    }
+
+    TEST_F(WindowInputDispatchTest, CapturedReleaseOutsidePanelEndsScrubDrag) {
+        // Body listeners match ScrubFieldController: press the field, move and release on the body.
+        struct Scrub final : Rml::EventListener {
+            bool active = false;
+            float value = 1.f, x = 0.f;
+            int ups = 0, clicks = 0;
+            void ProcessEvent(Rml::Event& event) override {
+                const float mx = event.GetParameter("mouse_x", 0.f);
+                if (event.GetId() == Rml::EventId::Mousedown) {
+                    active = true;
+                    x = mx;
+                } else if (event.GetId() == Rml::EventId::Mousemove && active) {
+                    value += (mx - x) * 0.01f;
+                    x = mx;
+                } else if (event.GetId() == Rml::EventId::Mouseup && active) {
+                    active = false;
+                    ++ups;
+                } else if (event.GetId() == Rml::EventId::Click) {
+                    ++clicks;
+                }
+            }
+        } scrub;
+        gui::RmlPanelHost host(&manager(), "test-scrub-release", "");
+        attachInputHost(host, 200, 160,
+                        "<rml><head><style>body{width:200px;height:160px;}"
+                        "#field{position:absolute;left:20px;top:40px;width:100px;height:28px;}"
+                        "</style></head><body id='body'><div id='field'/></body></rml>");
+        forwardHost(host, 0, 0);
+        auto* field = host.getDocument()->GetElementById("field");
+        auto* body = host.getDocument()->GetElementById("body");
+        ASSERT_NE(field, nullptr);
+        ASSERT_NE(body, nullptr);
+        field->AddEventListener(Rml::EventId::Mousedown, &scrub);
+        field->AddEventListener(Rml::EventId::Click, &scrub);
+        body->AddEventListener(Rml::EventId::Mousemove, &scrub);
+        body->AddEventListener(Rml::EventId::Mouseup, &scrub);
+        const auto at = [&](uint32_t type, float x, float y) {
+            SDL_Event event{};
+            event.type = type;
+            if (type == SDL_EVENT_MOUSE_MOTION) {
+                event.motion.x = x;
+                event.motion.y = y;
+            } else {
+                event.button.button = SDL_BUTTON_LEFT;
+                event.button.x = x;
+                event.button.y = y;
+            }
+            dispatch(event);
+        };
+        at(SDL_EVENT_MOUSE_BUTTON_DOWN, 70, 54);
+        at(SDL_EVENT_MOUSE_MOTION, 150, 54);
+        const float dragged = scrub.value;
+        ASSERT_GT(dragged, 1.f);
+        ASSERT_TRUE(scrub.active);
+        at(SDL_EVENT_MOUSE_MOTION, 320, 200);
+        ASSERT_FLOAT_EQ(scrub.value, dragged);
+        at(SDL_EVENT_MOUSE_BUTTON_UP, 320, 200);
+        at(SDL_EVENT_MOUSE_MOTION, 70, 54);
+        EXPECT_FALSE(scrub.active);
+        EXPECT_EQ(scrub.ups, 1);
+        EXPECT_FLOAT_EQ(scrub.value, dragged);
+        EXPECT_EQ(scrub.clicks, 0);
+        at(SDL_EVENT_MOUSE_BUTTON_DOWN, 70, 54);
+        at(SDL_EVENT_MOUSE_BUTTON_UP, 70, 54);
+        EXPECT_EQ(scrub.clicks, 1);
+        EXPECT_FALSE(scrub.active);
+        field->RemoveEventListener(Rml::EventId::Mousedown, &scrub);
+        field->RemoveEventListener(Rml::EventId::Click, &scrub);
+        body->RemoveEventListener(Rml::EventId::Mousemove, &scrub);
+        body->RemoveEventListener(Rml::EventId::Mouseup, &scrub);
     }
 
     TEST_F(WindowInputDispatchTest, DispatchReusesEventStorage) {
