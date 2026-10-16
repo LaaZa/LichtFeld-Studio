@@ -1415,6 +1415,16 @@ namespace lfs::vis::project {
         collectUnsupportedSessionSettings(
             const Json& gui, const Json& view, const Json& sequencer);
 
+        bool namesPluginItem(const PreparedGuiSessionRestore::UnsupportedSetting& setting) {
+            static constexpr std::array<std::string_view, 3> registry_paths{
+                "tools.active_tool_id",
+                "panel_registry.active_tabs.main_panel",
+                "fixed_arrangement.bottom_dock_active_tab"};
+            const std::string_view value = setting.value;
+            return std::ranges::find(registry_paths, setting.path) != registry_paths.end() &&
+                   !value.starts_with("builtin.") && !value.starts_with("lfs.") && !value.starts_with("native.");
+        }
+
     } // namespace
 
     lfs::Result<PreparedGuiSessionRestore>
@@ -1483,6 +1493,9 @@ namespace lfs::vis::project {
         prepared.unsupported_settings =
             collectUnsupportedSessionSettings(
                 *gui, *view, *sequencer);
+        // A plugin's tool or panel is missing whenever the plugin is not loaded,
+        // which says nothing about a newer version. Saving still keeps the value.
+        std::erase_if(prepared.unsupported_settings, namesPluginItem);
         if (references) {
             const auto env_uuid_json =
                 prepared.chapters.view.dom().get_json(
@@ -1990,10 +2003,6 @@ namespace lfs::vis::project {
                      return selection_submode_from_name(value).has_value();
                  }),
                  "centers"},
-                {"VIEW", "tools.active_submode_id", string_parser([](const std::string_view value) {
-                     return selection_submode_from_name(value).has_value();
-                 }),
-                 "centers"},
                 {"VIEW", "tools.active_tool_id", string_parser([](const std::string_view value) {
                      static constexpr std::array builtins{
                          "builtin.select", "builtin.translate", "builtin.rotate",
@@ -2011,7 +2020,6 @@ namespace lfs::vis::project {
                 {"VIEW", "tools.multi_transform_mode", strings({"selection", "individual"}), "selection"},
                 {"VIEW", "tools.crop_shape", strings({"box", "ellipsoid"}), "box"},
                 {"VIEW", "tools.crop_operation", strings({"translate", "rotate", "scale"}), "translate"},
-                {"GUIL", "panel_registry.active_tabs.scene_panel", strings({"scene", "history", "logging"}), "scene"},
                 {"SEQR", "loop_mode", strings({"once", "loop", "ping_pong"}), "once"},
                 {"SEQR", "preferences.preset", string_parser([](const std::string_view value) {
                      return video_preset_from_name(value).has_value();
@@ -2401,9 +2409,6 @@ namespace lfs::vis::project {
              {
                  {"main_panel",
                   layout.active_tab_id},
-                 {"scene_panel",
-                  gui_manager
-                      ->scenePanelActiveTab()},
              }},
         };
         if (!panel_payloads.empty())
@@ -3291,14 +3296,6 @@ namespace lfs::vis::project {
                         return panel.id == layout.active_tab_id;
                     }))
                     layout.active_tab_id = main_tabs.empty() ? std::string{} : main_tabs.front().id;
-                if (const auto scene_tab =
-                        scalar<std::string>(
-                            *active_tabs,
-                            "scene_panel")) {
-                    gui_manager
-                        ->setScenePanelActiveTab(
-                            *scene_tab);
-                }
             }
             const auto bottom_tabs = gui::PanelRegistry::instance()
                                          .get_panels_for_space(

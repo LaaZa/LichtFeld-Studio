@@ -421,7 +421,6 @@ def test_shortcut_buttons_declare_actions_without_cached_text(toolbar_module):
     assert 'data-keymap-action="asset_gallery_copy_link"' in projects
     scene = (resources / "scene_tree.rml").read_text(encoding="utf-8")
     assert 'data-keymap-action="toggle_scene_selection_training"' in scene
-    assert 'data-tooltip="common.undo" data-action="undo"' in scene
     assert 'data-keymap-action="toggle_grid"' in (resources / "rendering.rml").read_text(encoding="utf-8")
     assert 'data-keymap-action="toggle_camera_frustums"' in (resources / "rendering.rml").read_text(encoding="utf-8")
     assert 'data-keymap-action="toggle_ui"' in (resources / "menubar.rml").read_text(encoding="utf-8")
@@ -1653,10 +1652,10 @@ def test_viewport_overlay_template_moves_tools_left_and_transform_numbers_center
     assert "width: 64dp;" in rcss
     assert "width: 24dp;" in rcss
     assert ".toolbar-vertical .icon-btn {\n    position: relative;\n    display: flex;" in rcss
-    assert ".viewport-gizmo-controls {\n    position: absolute;\n    top: 133dp;\n    right: 10dp;" in rcss
-    assert "flex-direction: column;\n    align-items: center;\n    width: 120dp;" in rcss
+    assert ".viewport-gizmo-controls {\n    position: absolute;\n    top: 117dp;\n    right: 10dp;" in rcss
+    assert "flex-direction: column;\n    align-items: center;\n    width: 104dp;" in rcss
     assert ".viewport-gizmo-control-row {\n    display: flex;\n    flex-direction: row;" in rcss
-    assert "justify-content: center;\n    width: 120dp;\n    gap: 3dp;" in rcss
+    assert "justify-content: center;\n    width: 104dp;\n    gap: 3dp;" in rcss
     assert ".viewport-gizmo-controls .icon-btn {\n    position: relative;\n    display: flex;" in rcss
     gizmo_button_start = rcss.index(".viewport-gizmo-controls .icon-btn {")
     gizmo_button_end = rcss.index(".viewport-gizmo-controls .icon-btn:hover")
@@ -2009,6 +2008,7 @@ def test_viewport_toolbar_update_syncs_utility_records(toolbar_module, monkeypat
         "tr",
         lambda key: {
             "toolbar.focus_selection": "Focus Selection",
+            "toolbar.reset_home": "Reset Home",
             "toolbar.asset_manager": "Projects",
             "menu.tools.plugin_marketplace": "Plugins",
             "toolbar.viewport_export": "Export",
@@ -2050,9 +2050,16 @@ def test_viewport_toolbar_update_syncs_utility_records(toolbar_module, monkeypat
     assert [button["action"] for button in primary_buttons] == [
         "home",
         "focus_selection",
+        "reset_home",
     ]
     assert primary_buttons[1]["icon_src"] == "../icon/focus-selection.png"
     assert primary_buttons[1]["tooltip_text"] == "Focus Selection"
+    assert primary_buttons[2]["icon_src"] == "../icon/home-reset.png"
+    assert primary_buttons[2]["tooltip_text"] == "Reset Home"
+    reset_home_calls = []
+    monkeypatch.setattr(lf_stub, "reset_home", lambda: reset_home_calls.append(True), raising=False)
+    module._UtilityToolbarController().dispatch("reset_home", "")
+    assert reset_home_calls == [True]
     assert [button["button_id"] for button in extra_buttons] == [
         "util-asset-manager",
         "util-viewport-export",

@@ -18,6 +18,7 @@
 #include "gui/panel_layout.hpp"
 #include "gui/rml_menu_bar.hpp"
 #include "gui/rml_modal_overlay.hpp"
+#include "gui/rml_right_panel.hpp"
 #include "gui/rml_sequencer_overlay.hpp"
 #include "gui/rmlui/elements/python_editor_element.hpp"
 #include "gui/rmlui/elements/scene_graph_element.hpp"
@@ -30,6 +31,7 @@
 #include "gui/scale_gizmo.hpp"
 #include "gui/scene_panel_native.hpp"
 #include "gui/translation_gizmo.hpp"
+#include "gui/viewport_gizmo_geometry.hpp"
 #include "input/frame_input_buffer.hpp"
 #include "input/input_controller.hpp"
 #include "input/key_codes.hpp"
@@ -1217,8 +1219,11 @@ namespace lfs::vis {
             const size_t undo_before = op::undoHistory().undoCount();
             frame.mouse_x += 18.0f;
             frame.mouse_y += 11.0f;
+            frame.mouse_dx = 18.0f;
+            frame.mouse_dy = 11.0f;
             frame.mouse_down[0] = true;
             gizmo.renderViewportGizmo(layout);
+            frame.mouse_dx = frame.mouse_dy = 0.0f;
             EXPECT_FALSE(sameMatrixBits(before_rotation, glm::mat4(camera.R)));
 
             controller_->handleKey(input::KEY_ESCAPE, input::ACTION_PRESS, input::KEYMOD_NONE);
@@ -1234,6 +1239,117 @@ namespace lfs::vis {
             EXPECT_EQ(camera.pivot, before_pivot);
             EXPECT_EQ(op::undoHistory().undoCount(), undo_before);
             EXPECT_FALSE(gizmo.isViewportGizmoDragging());
+        }
+
+        // The axis widget as drawn for the 400x300 test viewport, looking down -Z.
+        gui::ViewportGizmoLayout prepareViewportGizmo() {
+            auto& camera = viewer_->getViewport().camera;
+            camera.t = {0.0f, 0.0f, 12.0f};
+            camera.pivot = {0.0f, 0.0f, 0.0f};
+            camera.R = rendering::makeVisualizerLookAtRotation(camera.t, camera.pivot);
+            controller_->setViewer(viewer_.get());
+            controller_->updateViewportBounds(0.0f, 0.0f, 400.0f, 300.0f);
+            auto& frame = frameInput();
+            frame.mouse_down[0] = frame.mouse_clicked[0] = frame.mouse_released[0] = false;
+            frame.mouse_dx = frame.mouse_dy = 0.0f;
+            gui::guiFocusState().want_capture_mouse = false;
+            return *gui::buildViewportGizmoLayout(viewer_->getViewport().getRotationMatrix(), {0.0f, 0.0f},
+                                                  {400.0f, 300.0f}, 1.0f);
+        }
+
+        void pressViewportGizmo(const gui::ViewportLayout& layout, const glm::vec2& point) {
+            auto& frame = frameInput();
+            frame.mouse_x = point.x;
+            frame.mouse_y = point.y;
+            frame.mouse_down[0] = frame.mouse_clicked[0] = true;
+            gui_->gizmo().renderViewportGizmo(layout);
+            frame.mouse_clicked[0] = false;
+        }
+
+        // A point on the sphere outside every marker.
+        static glm::vec2 viewportGizmoSpherePoint(const gui::ViewportGizmoLayout& gizmo_layout) {
+            for (float y = gizmo_layout.top_left.y; y < gizmo_layout.top_left.y + gizmo_layout.size; y += 2.0f)
+                for (float x = gizmo_layout.top_left.x; x < gizmo_layout.top_left.x + gizmo_layout.size; x += 2.0f)
+                    if (gizmo_layout.discContains({x, y}) && gui::hitTestViewportGizmoMarkers(gizmo_layout.markers, {x, y}) < 0)
+                        return {x, y};
+            ADD_FAILURE() << "no free point on the axis widget sphere";
+            return gizmo_layout.center;
+        }
+
+        void exerciseViewportGizmoEdgeDrag() {
+            auto& gizmo = gui_->gizmo();
+            auto& camera = viewer_->getViewport().camera;
+            const auto gizmo_layout = prepareViewportGizmo();
+            const gui::ViewportLayout layout{.pos = {0.0f, 0.0f}, .size = {400.0f, 300.0f}};
+            auto& frame = frameInput();
+            pressViewportGizmo(layout, viewportGizmoSpherePoint(gizmo_layout));
+            ASSERT_TRUE(gizmo.isViewportGizmoDragging());
+
+            // At the window edge SDL clamps the position, so only relative motion moves on.
+            // Panels claiming the pointer must not stall the drag either.
+            for (const bool ui_wants_mouse : {false, true}) {
+                gui::guiFocusState().want_capture_mouse = ui_wants_mouse;
+                const glm::mat4 before(camera.R);
+                frame.mouse_dx = 25.0f;
+                gizmo.renderViewportGizmo(layout);
+                EXPECT_FALSE(sameMatrixBits(before, glm::mat4(camera.R))) << ui_wants_mouse;
+            }
+            frame.mouse_dx = 0.0f;
+            frame.mouse_down[0] = false;
+            gizmo.renderViewportGizmo(layout);
+            EXPECT_FALSE(gizmo.isViewportGizmoDragging());
+            gui::guiFocusState().want_capture_mouse = false;
+        }
+
+        void exerciseViewportGizmoMarkerPress() {
+            auto& gizmo = gui_->gizmo();
+            auto& camera = viewer_->getViewport().camera;
+            const auto gizmo_layout = prepareViewportGizmo();
+            const glm::vec2 x_marker = gizmo_layout.markers[0].screen_pos;
+            ASSERT_EQ(gui::hitTestViewportGizmoMarkers(gizmo_layout.markers, x_marker), 0);
+            const glm::mat4 before(camera.R);
+            auto x_view = camera;
+            x_view.setAxisAlignedView(0, false);
+            const gui::ViewportLayout layout{.pos = {0.0f, 0.0f}, .size = {400.0f, 300.0f}};
+            auto& frame = frameInput();
+
+            // A click views along the axis on release.
+            pressViewportGizmo(layout, x_marker);
+            EXPECT_TRUE(sameMatrixBits(before, glm::mat4(camera.R)));
+            frame.mouse_down[0] = false;
+            gizmo.renderViewportGizmo(layout);
+            EXPECT_TRUE(sameMatrixBits(glm::mat4(x_view.R), glm::mat4(camera.R)));
+
+            // Pressing a marker and moving orbits like the sphere.
+            prepareViewportGizmo();
+            pressViewportGizmo(layout, x_marker);
+            frame.mouse_x += 12.0f;
+            frame.mouse_dx = 12.0f;
+            gizmo.renderViewportGizmo(layout);
+            frame.mouse_dx = 0.0f;
+            EXPECT_TRUE(gizmo.isViewportGizmoDragging());
+            EXPECT_FALSE(sameMatrixBits(before, glm::mat4(camera.R)));
+            EXPECT_FALSE(sameMatrixBits(glm::mat4(x_view.R), glm::mat4(camera.R)));
+            frame.mouse_down[0] = false;
+            gizmo.renderViewportGizmo(layout);
+            EXPECT_FALSE(gizmo.isViewportGizmoDragging());
+        }
+
+        // Each change of what the widget shows under the pointer wakes one frame.
+        void exerciseViewportGizmoHoverDemand() {
+            const auto gizmo_layout = prepareViewportGizmo();
+            gui_->viewport_layout_ = {.pos = {0.0f, 0.0f}, .size = {400.0f, 300.0f}};
+            auto& gizmo = gui_->gizmo();
+            const glm::vec2 away(200.0f, 200.0f);
+            context_->ProcessMouseMove(static_cast<int>(away.x), static_cast<int>(away.y), 0);
+            gui_->drawn_viewport_gizmo_hover_ = gizmo.viewportGizmoHover(away.x, away.y);
+            ASSERT_FALSE(gui_->passiveMouseMoveNeedsRender(away.x, away.y));
+            for (const glm::vec2 point : {viewportGizmoSpherePoint(gizmo_layout), gizmo_layout.markers[0].screen_pos, away}) {
+                context_->ProcessMouseMove(static_cast<int>(point.x), static_cast<int>(point.y), 0);
+                EXPECT_TRUE(gui_->passiveMouseMoveNeedsRender(point.x, point.y)) << point.x << "," << point.y;
+                gui_->drawn_viewport_gizmo_hover_ = gizmo.viewportGizmoHover(point.x, point.y);
+                EXPECT_FALSE(gui_->passiveMouseMoveNeedsRender(point.x, point.y)) << point.x << "," << point.y;
+            }
         }
 
         Viewport viewport_{400, 300};
@@ -1515,6 +1631,18 @@ namespace lfs::vis {
 
     TEST_F(WindowInputDispatchTest, EscapeCancelsViewportGizmoDragAndRestoresCamera) {
         exerciseViewportGizmoEscape();
+    }
+
+    TEST_F(WindowInputDispatchTest, ViewportGizmoOrbitKeepsTurningAtTheWindowEdgeAndOverUi) {
+        exerciseViewportGizmoEdgeDrag();
+    }
+
+    TEST_F(WindowInputDispatchTest, ViewportGizmoMarkerClickSnapsAndMarkerDragOrbits) {
+        exerciseViewportGizmoMarkerPress();
+    }
+
+    TEST_F(WindowInputDispatchTest, ViewportGizmoHoverChangesRequestAFrame) {
+        exerciseViewportGizmoHoverDemand();
     }
 
     TEST_F(WindowInputDispatchTest, SameFrameReleaseAppliesFinalTranslatePosition) {
@@ -2518,6 +2646,85 @@ namespace lfs::vis {
         EXPECT_NE(overlay_context->GetFocusElement(), overlay_select);
         click(60, 180);
         EXPECT_FALSE(overlay_select->IsSelectBoxVisible());
+    }
+
+    // Fails if a pointer event drops the open tab picker list from the overlay
+    // record, so the panel under the list takes clicks meant for its options.
+    TEST_F(WindowInputDispatchTest, OpenTabPickerKeepsCoveringPanelsDuringPointerEvents) {
+        gui::RmlRightPanel right_panel;
+        right_panel.init(&manager());
+        struct Shutdown {
+            gui::RmlRightPanel& panel;
+            ~Shutdown() { panel.shutdown(); }
+        } shutdown{right_panel};
+        gui::RightPanelLayout layout;
+        layout.pos = {250.0f, 0.0f};
+        layout.size = {150.0f, 300.0f};
+        std::vector<gui::TabSnapshot> tabs;
+        for (const char* id : {"first", "second", "third", "fourth"})
+            tabs.push_back({.id = id, .label = id, .dom_id = std::string("rp-tab-") + id});
+        const auto render = [&] {
+            manager().beginFrameCursorTracking();
+            right_panel.render(layout, tabs, "first", 0.0f, 0.0f, 400, 300);
+        };
+        render();
+        render();
+        auto* const context = Rml::GetContext("right_panel");
+        ASSERT_NE(context, nullptr);
+        auto* const picker = dynamic_cast<Rml::ElementFormControlSelect*>(
+            context->GetDocument(0)->GetElementById("tab-picker"));
+        ASSERT_NE(picker, nullptr);
+        picker->ShowSelectBox();
+        context->Update();
+        context->Render();
+        render();
+        Rml::Element* list = nullptr;
+        for (int i = 0; i < picker->GetNumChildren(true); ++i)
+            if (picker->GetChild(i)->GetTagName() == "selectbox")
+                list = picker->GetChild(i);
+        ASSERT_NE(list, nullptr);
+        const auto list_pos = list->GetAbsoluteOffset(Rml::BoxArea::Border);
+        const glm::vec2 point(layout.pos.x + list_pos.x + 10.0f, layout.pos.y + list_pos.y + 6.0f);
+        ASSERT_TRUE(manager().activeOverlayContainsPoint(point.x, point.y));
+
+        // SDL delivers the pointer to the right panel before the next frame.
+        right_panel.processInput(layout, {});
+        SDL_Event motion{};
+        motion.type = SDL_EVENT_MOUSE_MOTION;
+        motion.motion.x = point.x;
+        motion.motion.y = point.y;
+        dispatch(motion);
+        manager().beginFrameCursorTracking();
+        EXPECT_TRUE(picker->IsSelectBoxVisible());
+        EXPECT_TRUE(manager().activeOverlayOccludesContext(context_, point.x, point.y));
+    }
+
+    // Fails if a tab picked while the strip overflows stays scrolled out of view.
+    TEST_F(WindowInputDispatchTest, ActiveTabScrollsIntoTheOverflowingStrip) {
+        gui::RmlRightPanel right_panel;
+        right_panel.init(&manager());
+        struct Shutdown {
+            gui::RmlRightPanel& panel;
+            ~Shutdown() { panel.shutdown(); }
+        } shutdown{right_panel};
+        gui::RightPanelLayout layout;
+        layout.size = {150.0f, 300.0f};
+        std::vector<gui::TabSnapshot> tabs;
+        for (const char* id : {"first", "second", "third", "fourth"})
+            tabs.push_back({.id = id, .label = id, .dom_id = std::string("rp-tab-") + id});
+        auto* const document = Rml::GetContext("right_panel")->GetDocument(0);
+        auto* const strip = document->GetElementById("tab-strip-viewport");
+        ASSERT_NE(strip, nullptr);
+        for (const char* active : {"first", "fourth", "second"}) {
+            SCOPED_TRACE(active);
+            right_panel.render(layout, tabs, active, 0.0f, 0.0f, 400, 300);
+            auto* const tab = document->GetElementById(std::string("rp-tab-") + active);
+            ASSERT_NE(tab, nullptr);
+            EXPECT_GT(strip->GetScrollWidth(), strip->GetClientWidth());
+            EXPECT_GE(tab->GetOffsetLeft(), strip->GetScrollLeft() - 0.5f);
+            EXPECT_LE(tab->GetOffsetLeft() + tab->GetOffsetWidth(),
+                      strip->GetScrollLeft() + strip->GetClientWidth() + 0.5f);
+        }
     }
 
     TEST_F(WindowInputDispatchTest, SequencerEditShortcutsRespectTextFocusAndVisibility) {
