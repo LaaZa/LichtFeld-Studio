@@ -26,6 +26,7 @@
 #include "core/exif.hpp"
 #include "core/image_io.hpp"
 #include "core/logger.hpp"
+#include "core/native_fs.hpp"
 #include "core/number_format.hpp"
 #include "core/path_utils.hpp"
 #include "core/provenance.hpp"
@@ -2452,7 +2453,7 @@ namespace lfs::training {
         double source_ms = read_ms;
         if (cached) {
             raw = std::move(*cached);
-            LOG_INFO("Depth anchors: loaded {} cached anchors from {}", raw.size(), sidecar.string());
+            LOG_INFO("Depth anchors: loaded {} cached anchors from {}", raw.size(), lfs::core::path_to_utf8(sidecar));
         } else {
             nvtxRangePush("depth_anchors/compute");
             const auto compute_start = std::chrono::steady_clock::now();
@@ -2461,7 +2462,7 @@ namespace lfs::training {
             source_ms = phase_ms(compute_start);
             nvtxRangePop();
             if (!sidecar.empty() && !writeDepthAnchorSidecar(sidecar, raw, fingerprint)) {
-                LOG_WARN("Depth anchors: failed to write sidecar {}", sidecar.string());
+                LOG_WARN("Depth anchors: failed to write sidecar {}", lfs::core::path_to_utf8(sidecar));
             }
         }
         LOG_INFO("Depth anchors: fingerprint {:.1f} ms, {} {:.1f} ms",

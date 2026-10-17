@@ -6,6 +6,7 @@
 #include "core/environment.hpp"
 #include "core/error.hpp"
 #include "core/logger.hpp"
+#include "core/native_fs.hpp"
 #include "core/optimization_properties.hpp"
 #include "core/parameters.hpp"
 #include "core/path_utils.hpp"
@@ -69,6 +70,7 @@ namespace lfs::core::args {
             OptimizationCliBinding{"--random", "random", Bool},
             OptimizationCliBinding{"--init-num-pts", "init_num_pts", Integer},
             OptimizationCliBinding{"--init-extent", "init_extent", Float},
+            OptimizationCliBinding{"--init-mesh-resolution", "init_mesh_resolution", Integer},
             OptimizationCliBinding{"--mask-mode", "mask_mode", Enum, false,
                                    "; values: none, segment, ignore, segment_and_ignore, alpha_consistent"},
             OptimizationCliBinding{"--invert-masks", "invert_masks", Bool},
@@ -557,7 +559,7 @@ namespace {
             ".usd", ".usda", ".usdc", ".usdz",
             ".obj", ".fbx", ".gltf", ".glb", ".stl", ".dae", ".3ds", ".blend"};
         const auto is_supported = [&](const std::filesystem::path& p) {
-            auto ext = p.extension().string();
+            auto ext = lfs::core::path_to_utf8(p.extension());
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
             return std::ranges::find(SUPPORTED_EXTENSIONS, ext) != SUPPORTED_EXTENSIONS.end();
         };
@@ -578,7 +580,7 @@ namespace {
             return {};
         }
 
-        auto extension = view_path.extension().string();
+        auto extension = lfs::core::path_to_utf8(view_path.extension());
         std::ranges::transform(
             extension, extension.begin(),
             [](const unsigned char character) {
@@ -684,7 +686,7 @@ namespace {
             return std::nullopt;
         }
 
-        auto extension = output_path.extension().string();
+        auto extension = lfs::core::path_to_utf8(output_path.extension());
         std::transform(extension.begin(), extension.end(), extension.begin(),
                        [](const unsigned char c) {
                            return static_cast<char>(std::tolower(c));
@@ -757,7 +759,7 @@ namespace {
             ::args::ValueFlag<std::string> output_path(paths_group, "output_path", "Directory for the project file and --export files", {'o', "output-path"});
             ::args::ValueFlag<std::string> output_name(paths_group, "output_name", "Name of the project file and --export files (default project.licht and splat_ITER)", {"output-name"});
             ::args::ValueFlag<std::string> config_file(paths_group, "config_file", "LichtFeldStudio config file (json)", {"config"});
-            ::args::ValueFlag<std::string> init_path(paths_group, "path", "Initialize from splat file (.ply, .sog, .ssog, .spz, .usd, .usda, .usdc, .usdz, .resume)", {"init"});
+            ::args::ValueFlag<std::string> init_path(paths_group, "path", "Initialize from a splat, point cloud or mesh file; a mesh must be in the dataset's coordinates and is converted to splats when training starts", {"init"});
             ::args::ValueFlagList<std::string> add_splats(paths_group, "path", "Append trained splat file(s) to the training model before optimizer initialization", {"add-splat"});
             ::args::CounterFlag freeze(paths_group, "freeze", "Freeze the immediately preceding --add-splat rows from optimizer gradients and densification", {"freeze"});
             ::args::ValueFlag<float> freeze_lr_scale(paths_group, "scale", "Learning-rate scale for frozen splats (0 = fully frozen, default; try 0.01-0.1 to let frozen splats absorb small appearance mismatch)", {"freeze-lr-scale"});
@@ -825,6 +827,7 @@ namespace {
             ::args::Flag random(init_group, "random", lfs::core::args::optimization_cli_help("--random"), {"random"});
             ::args::ValueFlag<int> init_num_pts(init_group, "init_num_pts", lfs::core::args::optimization_cli_help("--init-num-pts"), {"init-num-pts"});
             ::args::ValueFlag<float> init_extent(init_group, "init_extent", lfs::core::args::optimization_cli_help("--init-extent"), {"init-extent"});
+            ::args::ValueFlag<int> init_mesh_resolution(init_group, "init_mesh_resolution", lfs::core::args::optimization_cli_help("--init-mesh-resolution"), {"init-mesh-resolution"});
 
             // =============================================================================
             // DATASET OPTIONS
@@ -1227,7 +1230,7 @@ namespace {
                     if (!lfs::core::native_fs::exists(ckpt_path)) {
                         return std::unexpected(std::format("Checkpoint file does not exist: {}", ckpt_path_str));
                     }
-                    auto extension = ckpt_path.extension().string();
+                    auto extension = lfs::core::path_to_utf8(ckpt_path.extension());
                     std::ranges::transform(
                         extension, extension.begin(),
                         [](const unsigned char character) {
@@ -1322,7 +1325,7 @@ namespace {
             const auto data_path_value = has_data_path
                                              ? lfs::core::utf8_to_path(::args::get(data_path))
                                              : std::filesystem::path{};
-            auto data_extension = data_path_value.extension().string();
+            auto data_extension = lfs::core::path_to_utf8(data_path_value.extension());
             std::ranges::transform(
                 data_extension, data_extension.begin(),
                 [](const unsigned char character) {
@@ -1548,6 +1551,7 @@ namespace {
                                         cropbox_loss_weight_val = cli_option_present({"--cropbox-loss-weight"}) ? std::optional<float>(::args::get(cropbox_loss_weight)) : std::optional<float>(),
                                         init_num_pts_val = cli_option_present({"--init-num-pts"}) ? std::optional<int>(::args::get(init_num_pts)) : std::optional<int>(),
                                         init_extent_val = cli_option_present({"--init-extent"}) ? std::optional<float>(::args::get(init_extent)) : std::optional<float>(),
+                                        init_mesh_resolution_val = cli_option_present({"--init-mesh-resolution"}) ? std::optional<int>(::args::get(init_mesh_resolution)) : std::optional<int>(),
                                         strategy_val = cli_option_present({"--strategy"}) ? std::optional<std::string>(::args::get(strategy)) : std::optional<std::string>(),
                                         timelapse_images_val = cli_option_present({"--timelapse-images"}) ? std::optional<std::vector<std::string>>(::args::get(timelapse_images)) : std::optional<std::vector<std::string>>(),
                                         timelapse_every_val = cli_option_present({"--timelapse-every"}) ? std::optional<int>(::args::get(timelapse_every)) : std::optional<int>(),
@@ -1717,6 +1721,7 @@ namespace {
                 setVal(cropbox_loss_weight_val, opt.cropbox_loss_weight);
                 setVal(init_num_pts_val, opt.init_num_pts);
                 setVal(init_extent_val, opt.init_extent);
+                setVal(init_mesh_resolution_val, opt.init_mesh_resolution);
                 setVal(strategy_val, opt.strategy);
                 setVal(timelapse_images_val, ds.timelapse_images);
                 setVal(timelapse_every_val, ds.timelapse_every);
@@ -1869,6 +1874,7 @@ namespace {
                 note_opt("cropbox_loss_weight", cropbox_loss_weight_val.has_value());
                 note_opt("init_num_pts", init_num_pts_val.has_value());
                 note_opt("init_extent", init_extent_val.has_value());
+                note_opt("init_mesh_resolution", init_mesh_resolution_val.has_value());
                 note_opt("strategy", strategy_val.has_value());
                 note_opt("sparsify_steps", sparsify_steps_val.has_value());
                 note_opt("init_rho", init_rho_val.has_value());
@@ -2253,10 +2259,10 @@ namespace {
                 return std::unexpected(std::format("Invalid format '{}'. Use: ply, sog, ssog, spz, glb, html, usd, usda, usdc, rad", ::args::get(format)));
             }
         } else if (!params.output_path.empty()) {
-            if (const auto fmt = parseFormat(params.output_path.extension().string())) {
+            if (const auto fmt = parseFormat(lfs::core::path_to_utf8(params.output_path.extension()))) {
                 params.format = *fmt;
             } else {
-                return std::unexpected(std::format("Unknown extension '{}'. Use --format", params.output_path.extension().string()));
+                return std::unexpected(std::format("Unknown extension '{}'. Use --format", lfs::core::path_to_utf8(params.output_path.extension())));
             }
         }
 
@@ -2350,7 +2356,7 @@ dataset options work as in training; see the Evaluation page of the docs.
             return std::nullopt;
         }
 
-        const std::string extension = lfs::core::utf8_to_path(model).extension().string();
+        const std::string extension = lfs::core::path_to_utf8(lfs::core::utf8_to_path(model).extension());
         const bool checkpoint = extension == ".licht" || extension == ".resume";
         if (!checkpoint && !given("-d") && !given("--data-path")) {
             error = "eval of a splat file needs -d <dataset>";
@@ -2459,7 +2465,7 @@ dataset options work as in training; see the Evaluation page of the docs.
             params.formats = std::move(*formats);
             params.format = params.formats.front();
         } else if (!params.output_path.empty()) {
-            if (const auto fmt = parseFormat(params.output_path.extension().string())) {
+            if (const auto fmt = parseFormat(lfs::core::path_to_utf8(params.output_path.extension()))) {
                 params.format = *fmt;
                 params.formats = {*fmt};
             } else if (!params.output_path.extension().empty() && !lfs::core::native_fs::is_directory(params.output_path)) {
@@ -2753,7 +2759,7 @@ dataset options work as in training; see the Evaluation page of the docs.
             }
             auto override_path = lfs::core::utf8_to_path(argv[4]);
             if (override_path.is_relative()) {
-                override_path = std::filesystem::current_path() / override_path;
+                override_path = lfs::core::native_fs::current_path() / override_path;
             }
             dataset = override_path.lexically_normal();
         }

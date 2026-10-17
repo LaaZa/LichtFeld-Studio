@@ -7,6 +7,7 @@
 #include "core/error.hpp"
 #include "core/export.hpp"
 #include "core/mesh2splat.hpp"
+#include "core/path_utils.hpp"
 
 #include <algorithm>
 #include <array>
@@ -83,6 +84,9 @@ namespace lfs::core {
             Inverted,
         };
         inline constexpr std::array kEvalPixelSets{EvalPixelSet::Mask, EvalPixelSet::Unmasked, EvalPixelSet::Inverted};
+
+        // Mesh2Splat allocates resolution^2 * 6 output splats up front: 2048 is already a 2.4 GB buffer.
+        inline constexpr int kMaxInitMeshResolution = 2048;
 
         // The set's name in eval_mask_report.
         [[nodiscard]] inline constexpr std::string_view eval_pixel_set_name(const EvalPixelSet set) noexcept {
@@ -201,7 +205,7 @@ namespace lfs::core {
         [[nodiscard]] inline std::filesystem::path default_dataset_output_path(
             const std::filesystem::path& dataset_path) {
             auto base_path = dataset_path;
-            auto ext = dataset_path.extension().string();
+            auto ext = lfs::core::path_to_utf8(dataset_path.extension());
             std::transform(ext.begin(), ext.end(), ext.begin(), [](const unsigned char c) {
                 return static_cast<char>(std::tolower(c));
             });
@@ -386,6 +390,9 @@ namespace lfs::core {
             bool random = false;        // Use random initialization instead of SfM
             int init_num_pts = 100'000; // Number of random points to initialize
             float init_extent = 3.0f;   // Extent of random point cloud
+
+            // Mesh2Splat raster resolution when the init file is a mesh
+            int init_mesh_resolution = Mesh2SplatOptions{}.resolution_target;
 
             // Sparsity optimization parameters
             bool enable_sparsity = false;

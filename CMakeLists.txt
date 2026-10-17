@@ -137,6 +137,10 @@ endif()
 # cudart_static.lib implicitly, which collides with cudart.lib when linking DLLs.
 set(CMAKE_CUDA_RUNTIME_LIBRARY Shared CACHE STRING "CUDA runtime linkage" FORCE)
 
+# Whole-program CUDA embeds a separate device program per translation unit.
+# Shared weak template stubs can otherwise select a program with different math flags.
+add_compile_options($<$<COMPILE_LANG_AND_ID:CUDA,NVIDIA>:--static-global-template-stub=true>)
+
 # On Windows with a multi-config generator (MSVC/Visual Studio, Ninja Multi-Config),
 # route all build outputs to build/<Config>/ so Debug and Release binaries are
 # separated. Single-config generators (Ninja, NMake) use a flat binary dir —
@@ -349,6 +353,11 @@ if(MSVC)
             ${CMAKE_${_lfs_language}_COMPILER_LAUNCHER})
     endforeach()
     unset(_lfs_language)
+endif()
+
+# native_fs relies on MSVC's lexically_relative fix for \\?\ paths (LWG 3699, VS 2022 17.4).
+if(MSVC AND MSVC_VERSION LESS 1934)
+    message(FATAL_ERROR "LichtFeld Studio needs Visual Studio 2022 17.4 or newer, found MSVC ${MSVC_VERSION}")
 endif()
 
 # Minimum SM for PTX-only (75=Turing, 80=Ampere, 86=GA102, 89=Ada, 90=Hopper)
