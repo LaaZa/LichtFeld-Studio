@@ -21,6 +21,7 @@
 #include "gui/error_event_bridge.hpp"
 #include "gui/gallery_scene_publication.hpp"
 #include "gui/gui_manager.hpp"
+#include "gui/html_viewer_export.hpp"
 #include "gui/import_error.hpp"
 #include "gui/panel_registry.hpp"
 #include "gui/string_keys.hpp"
@@ -1823,6 +1824,8 @@ namespace lfs::vis::gui {
         auto provenance = include_provenance ? make_gui_export_stamp(*scene_manager)
                                              : core::make_minimal_provenance_stamp();
 
+        const auto background_color = resolve_html_export_background_color();
+
         startAsyncExport(format,
                          path,
                          std::move(splats),
@@ -1832,7 +1835,8 @@ namespace lfs::vis::gui {
                          rad_flip_y,
                          rad_streamable,
                          spz_version,
-                         std::move(provenance), lod_levels, lod_ratio, chunk_count_k, chunk_extent, chunk_min_k, kmeans_iterations);
+                         std::move(provenance), lod_levels, lod_ratio, chunk_count_k, chunk_extent, chunk_min_k, kmeans_iterations,
+                         background_color);
     }
 
     void AsyncTaskManager::startColmapExport(const std::filesystem::path& path) {
@@ -2113,7 +2117,8 @@ namespace lfs::vis::gui {
                                             bool rad_streamable,
                                             int spz_version,
                                             core::ProvenanceStamp provenance,
-                                            int lod_levels, float lod_ratio, int chunk_count_k, float chunk_extent, int chunk_min_k, int kmeans_iterations) {
+                                            int lod_levels, float lod_ratio, int chunk_count_k, float chunk_extent, int chunk_min_k, int kmeans_iterations,
+                                            std::optional<glm::vec3> background_color) {
         if (splats.empty()) {
             LOG_ERROR("No splat data to export");
             publishExportFailureState(format, path, LOC(lichtfeld::Strings::Runtime::NO_SPLAT_DATA));
@@ -2156,7 +2161,7 @@ namespace lfs::vis::gui {
              rad_flip_y,
              rad_streamable,
              spz_version,
-             provenance, lod_levels, lod_ratio, chunk_count_k, chunk_extent, chunk_min_k, kmeans_iterations](
+             provenance, lod_levels, lod_ratio, chunk_count_k, chunk_extent, chunk_min_k, kmeans_iterations, background_color](
                 std::stop_token stop_token) mutable {
                 bool cancellation_logged = false;
                 jobs_.work(job);
@@ -2312,7 +2317,8 @@ namespace lfs::vis::gui {
                                 .output_path = path,
                                 .kmeans_iterations = 10,
                                 .progress_callback = update_progress,
-                                .provenance = provenance};
+                                .provenance = provenance,
+                                .background_color = background_color};
                             if (auto result = lfs::io::export_html(*splat_data, options); result) {
                                 success = true;
                             } else {
@@ -2437,9 +2443,52 @@ namespace lfs::vis::gui {
         jobs_.requestCancel(
             export_state_.job, LOC(lichtfeld::Strings::Runtime::TASK_CANCELLING));
         publishExportState();
+        if (drag_export_cancel_)
+            drag_export_cancel_();
         if (export_state_.thread && export_state_.thread->joinable()) {
             export_state_.thread->request_stop();
         }
+    }
+
+    bool AsyncTaskManager::beginDragExport(ExportFormat format, std::function<void()> cancel) {
+        if (isExporting() || !beginJob(export_state_.job, JobType::Export, LOC("export.exporting")))
+            return false;
+        {
+            const std::lock_guard lock(export_state_.mutex);
+            export_state_.format = format;
+            export_state_.path.clear();
+            export_state_.commit_uuid.clear();
+        }
+        drag_export_cancel_ = std::move(cancel);
+        publishExportState();
+        return true;
+    }
+
+    std::function<void()> AsyncTaskManager::dragExportWorkerStart() const {
+        return [registry = &jobs_, job = export_state_.job, started = std::make_shared<std::atomic<bool>>(false)] {
+            if (!started->exchange(true))
+                registry->work(job);
+        };
+    }
+
+    void AsyncTaskManager::reportDragExport(float progress, std::string stage) {
+        if (!drag_export_cancel_)
+            return;
+        jobs_.report(export_state_.job, progress, std::move(stage));
+        publishExportState();
+    }
+
+    void AsyncTaskManager::finishDragExport(bool cancelled, std::string error) {
+        if (!drag_export_cancel_)
+            return;
+        drag_export_cancel_ = {};
+        if (cancelled)
+            jobs_.canceled(export_state_.job);
+        else if (!error.empty())
+            jobs_.failed(export_state_.job, std::move(error));
+        else
+            jobs_.completed(export_state_.job);
+        publishExportState();
     }
 
     void AsyncTaskManager::publishExportFailureState(const ExportFormat format,
@@ -2479,7 +2528,7 @@ namespace lfs::vis::gui {
             const std::lock_guard lock(export_state_.mutex);
             state.format = exportProgressFormatName(export_state_.format);
             state.path = lfs::core::path_to_utf8(export_state_.path);
-            if (state.outcome == "completed" && state.error.empty()) {
+            if (state.outcome == "completed" && state.error.empty() && !export_state_.path.empty()) {
                 warn_for_extension = core::scene_export_path_status(export_state_.format, export_state_.path) == core::SceneExportPathStatus::Warn;
                 format_name = core::scene_export_format_name(export_state_.format);
             }
