@@ -150,6 +150,17 @@ jobs:
       - name: Prepare install payload
         run: |
           DESTDIR=dist cmake --install build
+
+          # Remove all accidental CUDA Toolkit files, headers, CMake modules, and binaries
+          # that were incorrectly copied into the installation payload directory.
+          find dist -name "*.cmake" -o -name "*.rst" -o -name "*.pc" -o -name "cuda*.h" -o -name "nv*.h" -delete 2>/dev/null || true
+          find dist -name "nvcc*" -o -name "nvlink*" -o -name "nvprune*" -o -name "nvdisasm*" -o -name "cuda-gdb*" -o -name "cudafe++*" -delete 2>/dev/null || true
+          find dist -name "libnv*.so*" -o -name "libcuda.so*" -o -name "libcudart.so*" -o -name "libcudadebugger.so*" -delete 2>/dev/null || true
+          
+          # Clean up any stray include/share directories associated with CUDA
+          rm -rf dist/usr/include/cuda* dist/usr/include/nv* dist/usr/share/cuda* 2>/dev/null || true
+
+          
           # Bundle the vcpkg Python standard library
           mkdir -p dist/usr/lib
           cp -r build/vcpkg_installed/x64-linux/lib/python3.* dist/usr/lib/
