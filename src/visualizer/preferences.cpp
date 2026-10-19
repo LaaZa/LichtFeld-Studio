@@ -967,11 +967,11 @@ namespace lfs::vis {
         return lfs::core::persisted_settings::field<bool>(impl_->values, "remember_camera_view_snap", false);
     }
     void UserPreferences::setSplatDrag(const SplatDragPreferenceState& state) {
-        if (state.format != "ply" && state.format != "spz")
+        if ((state.format != "ply" && state.format != "spz") || !state.axes.valid())
             return;
         std::scoped_lock lock(impl_->mutex);
         impl_->loadLocked();
-        impl_->values["splat_drag"] = {{"format", state.format}, {"sh_degree", std::clamp(state.sh_degree, 0, 3)}, {"blender_axes", state.blender_axes}};
+        impl_->values["splat_drag"] = {{"format", state.format}, {"sh_degree", std::clamp(state.sh_degree, 0, 3)}, {"up_axis", state.axes.up}};
         impl_->saveLocked();
     }
     SplatDragPreferenceState UserPreferences::splatDrag() {
@@ -985,12 +985,15 @@ namespace lfs::vis {
         state.format = field<std::string>(*it, "format", "ply");
         if (state.format != "ply" && state.format != "spz")
             state.format = "ply";
-        std::optional<int> limit;
-        if (it->contains("sh_degree"))
-            limit = field<int>(*it, "sh_degree", 3);
-        state.sh_degree = resolveSplatDragShLimit(limit, field<bool>(*it, "maximum_quality", true),
-                                                  field<int>(*it, state.format == "spz" ? "spz_sh" : "ply_sh", -1));
-        state.blender_axes = field<bool>(*it, "blender_axes", true);
+        state.sh_degree = std::clamp(field<int>(*it, "sh_degree", 3), 0, 3);
+        // Preserve the old checkbox for existing users, while fresh settings
+        // retain source axes unless the native drag recognizes Blender.
+        if (!it->contains("up_axis") && field<bool>(*it, "blender_axes", false))
+            state.axes = SplatDragAxes::blender();
+        else
+            state.axes = {field<int>(*it, "up_axis", -2)};
+        if (!state.axes.valid())
+            state.axes = {};
         return state;
     }
     void UserPreferences::setSceneGraphSelectionMarkers(const bool enabled) {
