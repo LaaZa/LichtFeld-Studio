@@ -1,4 +1,5 @@
 {
+  "common.reset_default_hint": "Double-click to restore the default: {value}",
   "main_panel.selection_outline_color": "Outline color",
   "main_panel.selection_outline_opacity": "Opacity",
   "main_panel.selection_outline_width": "Thickness",
@@ -792,7 +793,11 @@
     "button.stop": "Stop Training",
     "button.reset": "Reset Training",
     "button.add": "Add",
-    "button.remove": "Remove"
+    "button.remove": "Remove",
+    "distorted_warning.title": "Distorted Images Detected",
+    "distorted_warning.message": "Distorted images detected. Enable Undistort or GUT to train on cameras with distortion.",
+    "distorted_warning.btn_undistort": "Undistort",
+    "distorted_warning.btn_gut": "GUT"
   },
   "rendering": "Rendering",
   "scene": {
@@ -2309,6 +2314,7 @@
     "status_loading": "loading",
     "status_error": "error",
     "status_disabled": "disabled",
+    "status_restart_required": "restart required",
     "error.enter_github_url": "Please enter a GitHub URL",
     "status.installed": "Installed: {}",
     "status.install_failed": "Install failed",

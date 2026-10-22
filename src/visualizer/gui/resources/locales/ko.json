@@ -1,4 +1,5 @@
 {
+  "common.reset_default_hint": "두 번 클릭하여 기본값으로 복원: {value}",
   "main_panel.selection_outline_color": "윤곽선 색상",
   "main_panel.selection_outline_opacity": "불투명도",
   "main_panel.selection_outline_width": "두께",
@@ -783,7 +784,11 @@
     "button.stop": "학습 중지",
     "button.reset": "학습 재설정",
     "button.add": "추가",
-    "button.remove": "제거"
+    "button.remove": "제거",
+    "distorted_warning.title": "왜곡된 이미지 감지됨",
+    "distorted_warning.message": "왜곡된 이미지가 감지되었습니다. 왜곡이 있는 카메라로 학습하려면 왜곡 보정 또는 GUT를 활성화하세요.",
+    "distorted_warning.btn_undistort": "왜곡 보정",
+    "distorted_warning.btn_gut": "GUT"
   },
   "rendering": "렌더링",
   "scene": {
@@ -2298,6 +2303,7 @@
     "status_loading": "불러오는 중",
     "status_error": "오류",
     "status_disabled": "비활성화됨",
+    "status_restart_required": "재시작 필요",
     "error.enter_github_url": "GitHub URL을 입력하세요",
     "status.installed": "설치됨: {}",
     "status.install_failed": "설치 실패",
