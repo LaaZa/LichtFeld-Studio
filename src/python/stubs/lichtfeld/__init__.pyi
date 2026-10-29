@@ -632,6 +632,12 @@ def free_icon(texture_id: int) -> None:
 def reset_camera() -> None:
     """Reset camera to default position and orientation"""
 
+def set_vr_active(active: bool) -> None:
+    """Enter or exit VR viewing"""
+
+def recenter_vr() -> None:
+    """Put the VR view back at the desktop camera"""
+
 def focus_selection() -> bool:
     """
     Focus the active viewport on the selection, or the whole scene when nothing is selected
@@ -2719,6 +2725,15 @@ class OptimizationParams:
     @property
     def save_steps(self) -> list[int]:
         """List of iterations at which to save the project (project.licht)"""
+
+    @property
+    def keep_all_checkpoints(self) -> bool:
+        """
+        Keep every training checkpoint; otherwise replace the superseded checkpoint and preserve existing history
+        """
+
+    @keep_all_checkpoints.setter
+    def keep_all_checkpoints(self, arg: bool, /) -> None: ...
 
     def add_save_step(self, step: int) -> None:
         """Add a save step (ignored if duplicate)"""
