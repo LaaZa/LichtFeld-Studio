@@ -315,6 +315,8 @@ namespace lfs::io::project {
         [[nodiscard]] ViewSessionChapter& edit_view() noexcept;
         [[nodiscard]] const EditorSessionChapter& editor() const noexcept;
         [[nodiscard]] EditorSessionChapter& edit_editor() noexcept;
+        [[nodiscard]] const ShaderLibraryChapter& shaders() const noexcept;
+        [[nodiscard]] ShaderLibraryChapter& edit_shaders() noexcept;
         [[nodiscard]] const SequencerSessionChapter& sequencer() const noexcept;
         [[nodiscard]] SequencerSessionChapter& edit_sequencer() noexcept;
         [[nodiscard]] const MetricsChapter& metrics() const noexcept;
@@ -394,6 +396,11 @@ namespace lfs::io::project {
         [[nodiscard]] lfs::Result<void>
         set_collision(const lfs::core::Uuid& instance_uuid,
                       std::shared_ptr<const lfs::core::CollisionVolume> volume);
+        [[nodiscard]] bool has_deferred_collision_payloads() const;
+        // May run on a worker only while this candidate document is exclusively
+        // owned by the opener. Publishes no live scene state.
+        [[nodiscard]] lfs::Result<void>
+        preload_collision_payloads(const std::function<bool()>& canceled = {});
         // Drop SPLT/PCLD/MESH/COLV payloads the current scene graph no longer binds.
         void remove_geometry_payloads_not_bound_by_scene();
 
