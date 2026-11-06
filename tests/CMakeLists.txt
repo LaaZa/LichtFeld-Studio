@@ -701,6 +701,8 @@ set(POPSPA_TEST_FILES
 
 # Regular test sources (unit tests, integration tests)
 set(TEST_FILES
+    test_splat_preview.cpp
+    test_training_hook_context.cpp
     licht_test_support.cpp
     test_assert_hardening.cpp
     test_cuda_error.cpp
@@ -1053,6 +1055,7 @@ set(TEST_FILES
     test_viewport_region_utils.cpp
     test_viewport_interop_decision.cpp
     test_mesh_data.cpp
+    test_noise_infill.cpp
     test_mesh_offscreen_renderer.cpp
     test_align_transform.cpp
     test_scale_distance.cpp
@@ -1667,6 +1670,8 @@ set(LFS_PYTHON_FAST_TESTS
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_operator_rich_returns.py
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_project_operations.py
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_plugin_api_surface.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/python/test_training_adapter.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/python/test_training_sessions.py
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_plugin_marketplace_panel.py
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_plugin_system.py
     ${CMAKE_CURRENT_SOURCE_DIR}/python/test_plugin_templates.py
@@ -1857,6 +1862,18 @@ if(UNIX AND NOT APPLE AND TARGET LichtFeld-Studio)
         ENVIRONMENT "LFS_EXECUTABLE=$<TARGET_FILE:LichtFeld-Studio>"
     )
 
+    add_test(NAME lichtfeld.python.scene_splat_inputs
+        COMMAND ${Python_EXECUTABLE} -m pytest -q
+            ${CMAKE_CURRENT_SOURCE_DIR}/python/test_scene_splat_inputs_runtime.py
+    )
+    set_tests_properties(lichtfeld.python.scene_splat_inputs PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        LABELS "gpu;integration"
+        TIMEOUT 300
+        RESOURCE_LOCK lfs_gui_gpu
+        ENVIRONMENT "LFS_EXECUTABLE=$<TARGET_FILE:LichtFeld-Studio>"
+    )
+
     add_test(NAME lichtfeld.python.scene_export_path
         COMMAND ${Python_EXECUTABLE} -m pytest -q
             ${CMAKE_CURRENT_SOURCE_DIR}/python/test_scene_export_path_runtime.py
@@ -1904,11 +1921,19 @@ add_test(NAME lichtfeld.python.gpu
         ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_row_mask_assignment.py
         ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_repeat_regression.py
         ${CMAKE_CURRENT_SOURCE_DIR}/python/test_tensor_property.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/python/test_training_adapter.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/python/test_training_sessions.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/python/test_standalone_camera_load_image.py
 )
 set_tests_properties(lichtfeld.python.gpu PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     LABELS "fast;gpu"
     TIMEOUT 60
+)
+set_tests_properties(
+    lichtfeld.python.fast lichtfeld.python.gpu lichtfeld.python.slow lichtfeld.python.nightly
+    PROPERTIES
+    ENVIRONMENT "LFS_EXECUTABLE=$<TARGET_FILE:LichtFeld-Studio>;LFS_TEST_BUILD_DIR=${CMAKE_BINARY_DIR}"
 )
 
 
