@@ -11,6 +11,7 @@
 #include "lfs/core/warp_reduce.cuh"
 #include "lfs/training/effective_rank.cuh"
 #include "lfs/training/mean_step_scale.cuh"
+#include "lfs/training/ray_depth_step.cuh"
 #include "rasterization_config.h"
 #include "utils.h"
 #include "warp_gradient_reduce.cuh"
@@ -72,6 +73,7 @@ namespace fast_lfs::rasterization::kernels::backward {
         const float clip_right,
         const float clip_top,
         const float clip_bottom,
+        const float dilation_scale,
         const uint sh_layout_slots,
         FusedAdamSettings fused_adam,
         // model-truth shN-rest decode binds. fused_adam.shN.sh_value_*
@@ -364,7 +366,7 @@ namespace fast_lfs::rasterization::kernels::backward {
                 jw_r2.x * cov3d.m13 + jw_r2.y * cov3d.m23 + jw_r2.z * cov3d.m33);
 
             // 2d covariance gradient (use same dilation as forward pass)
-            constexpr float kernel_size = MIP_FILTER ? config::dilation_mip_filter : config::dilation;
+            const float kernel_size = (MIP_FILTER ? config::dilation_mip_filter : config::dilation) * dilation_scale;
             const float raw_a = dot(jwc_r1, jw_r1);
             const float raw_b = dot(jwc_r1, jw_r2);
             const float raw_c = dot(jwc_r2, jw_r2);
@@ -384,12 +386,10 @@ namespace fast_lfs::rasterization::kernels::backward {
             const float grad_compensated_opacity = grad_opacity_helper[work_idx];
             float opacity_compensation = 1.0f;
             if constexpr (MIP_FILTER) {
-                const float det_raw = raw_a * raw_c - raw_b * raw_b;
-                if (det_raw > config::min_cov2d_determinant && determinant > config::min_cov2d_determinant) {
-                    opacity_compensation = sqrtf(det_raw * determinant_rcp);
-                } else {
-                    opacity_compensation = 0.0f;
-                }
+                // The forward's factor: it keeps every splat with det >= min_cov2d_determinant.
+                // It scales the opacity gradient only and stays detached from the covariance: feeding this
+                // determinant ratio into the scale and rotation gradients creates long splats.
+                opacity_compensation = sqrtf(fmaxf(raw_a * raw_c - raw_b * raw_b, 0.0f) * determinant_rcp);
             }
 
             const float sigmoid_derivative = lfs::core::sigmoid_derivative_from_logit(raw_opacities[primitive_idx]);
@@ -570,6 +570,15 @@ namespace fast_lfs::rasterization::kernels::backward {
             densification_error[primitive_idx] += length(grad_mean2d[work_idx] * make_float2(0.5f * w, 0.5f * h));
         }
 
+        // Ray-depth proposal from the rendered parameters; applied after the geometry rows' steps.
+        [[maybe_unused]] lfs::training::ray_depth::Proposal ray_depth;
+        [[maybe_unused]] const bool ray_depth_row = !DISABLED_FEATURES && contributed &&
+                                                    fused_adam.ray_depth_state != nullptr &&
+                                                    fused_adam.means.gradient_out == nullptr &&
+                                                    fused_adam.means.param != nullptr &&
+                                                    fused_adam.scaling.param != nullptr &&
+                                                    fused_adam.rotation.param != nullptr &&
+                                                    primitive_idx < static_cast<uint>(fused_adam.ray_depth_n);
         if constexpr (DISABLED_FEATURES) {
             adam_step_row(mean_grads, fused_adam.means, primitive_idx, 3,
                           fused_adam.beta1, fused_adam.beta2, fused_adam.eps);
@@ -581,14 +590,32 @@ namespace fast_lfs::rasterization::kernels::backward {
                                        fused_adam.mean_step_far_mask[primitive_idx];
             // single call site: helper runs block-wide reductions; divergent duplicates deadlock
             FusedAdamParam means_p = fused_adam.means;
+            float mean_step_ratio = 1.0f;
             if (far_mean_step && fused_adam.scaling.param != nullptr) {
                 const uint sb = primitive_idx * 3u;
                 if (sb + 2u < static_cast<uint>(fused_adam.scaling.n_elements)) {
                     const float* s = fused_adam.scaling.param + sb;
-                    means_p.step_size *= lfs::training::per_splat_mean_step_ratio(
+                    mean_step_ratio = lfs::training::per_splat_mean_step_ratio(
                         s[0], s[1], s[2],
                         fused_adam.mean_step_median_extent);
+                    means_p.step_size *= mean_step_ratio;
                 }
+            }
+            if (ray_depth_row) {
+                const uint b3 = primitive_idx * 3u;
+                const float lr_scale = lfs::training::ray_depth::row_lr_scale(
+                    primitive_idx, fused_adam.means.frozen_mask, fused_adam.means.frozen_mask_size,
+                    fused_adam.means.frozen_lr_scale, fused_adam.means.crop_damping_mask,
+                    fused_adam.means.crop_damping_mask_size, fused_adam.means.cropbox_lr_scale);
+                const float3 camera = cam_position[0];
+                const float camera_xyz[3] = {camera.x, camera.y, camera.z};
+                ray_depth = lfs::training::ray_depth::propose(
+                    fused_adam.ray_depth_state + primitive_idx * lfs::training::ray_depth::kStateStride,
+                    fused_adam.means.param + b3, fused_adam.scaling.param + b3,
+                    fused_adam.rotation.param + primitive_idx * 4u, camera_xyz, mean_grads,
+                    fused_adam.ray_depth_lr * lr_scale,
+                    lfs::training::ray_depth::kSidewaysSteps * fused_adam.ray_depth_mean_lr * lr_scale *
+                        mean_step_ratio);
             }
             adam_step_row(mean_grads, means_p, primitive_idx, 3,
                           fused_adam.beta1, fused_adam.beta2, fused_adam.eps);
@@ -596,6 +623,16 @@ namespace fast_lfs::rasterization::kernels::backward {
         adam_step_row(rotation_grads, fused_adam.rotation, primitive_idx, 4, fused_adam.beta1, fused_adam.beta2, fused_adam.eps);
         adam_step_row(scale_grads, fused_adam.scaling, primitive_idx, 3, fused_adam.beta1, fused_adam.beta2, fused_adam.eps);
         adam_step_row(opacity_grads, fused_adam.opacity, primitive_idx, 1, fused_adam.beta1, fused_adam.beta2, fused_adam.eps);
+        if constexpr (!DISABLED_FEATURES) {
+            if (ray_depth_row) {
+                const float3 camera = cam_position[0];
+                const float camera_xyz[3] = {camera.x, camera.y, camera.z};
+                lfs::training::ray_depth::commit(
+                    fused_adam.ray_depth_state + primitive_idx * lfs::training::ray_depth::kStateStride,
+                    fused_adam.means.param + primitive_idx * 3u, fused_adam.scaling.param + primitive_idx * 3u,
+                    camera_xyz, ray_depth.dt, ray_depth.bperp2 >= 0.0f, fused_adam.ray_depth_far_limit);
+            }
+        }
     }
 
     __device__ __forceinline__ float background_transmittance_grad(

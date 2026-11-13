@@ -1108,8 +1108,7 @@ namespace lfs::training {
         }
         if (copy_stream) {
             lfs::core::CudaMemoryPool::instance().release_stream(copy_stream);
-            LFS_CUDA_LOG_TEARDOWN(cudaStreamDestroy(copy_stream), copy_stream,
-                                  "heatmap state teardown: destroy copy stream");
+            LFS_CUDA_LOG_STREAM_DESTROY(copy_stream, "heatmap state teardown: destroy copy stream");
         }
     }
 
@@ -2251,18 +2250,15 @@ namespace lfs::training {
             // Roll back every member handle published by this transaction.
             destroySyncPrimitives();
             if (metrics_stream_) {
-                LFS_CUDA_LOG_TEARDOWN(cudaStreamDestroy(metrics_stream_), metrics_stream_,
-                                      "rollback: destroy metrics stream");
+                LFS_CUDA_LOG_STREAM_DESTROY(metrics_stream_, "rollback: destroy metrics stream");
                 metrics_stream_ = nullptr;
             }
             if (training_stream_) {
-                LFS_CUDA_LOG_TEARDOWN(cudaStreamDestroy(training_stream_), training_stream_,
-                                      "rollback: destroy training stream");
+                LFS_CUDA_LOG_STREAM_DESTROY(training_stream_, "rollback: destroy training stream");
                 training_stream_ = nullptr;
             }
             if (callback_stream_) {
-                LFS_CUDA_LOG_TEARDOWN(cudaStreamDestroy(callback_stream_), callback_stream_,
-                                      "rollback: destroy callback stream");
+                LFS_CUDA_LOG_STREAM_DESTROY(callback_stream_, "rollback: destroy callback stream");
                 callback_stream_ = nullptr;
             }
             throw;
@@ -3580,7 +3576,7 @@ namespace lfs::training {
                     if (params.optimization.gut) {
                         output = gsplat_rasterize(
                             render_camera, model, background,
-                            1.0f, false,
+                            1.0f, params.optimization.mip_filter,
                             lfs::core::param::is_eval_mask_depth(params.optimization.eval_mask)
                                 ? GsplatRenderMode::RGB_D
                                 : GsplatRenderMode::RGB,
@@ -3806,22 +3802,19 @@ namespace lfs::training {
         setActiveImageLoader(nullptr);
 
         if (callback_stream_) {
-            LFS_CUDA_LOG_TEARDOWN(cudaStreamDestroy(callback_stream_), callback_stream_,
-                                  "shutdown: destroy callback stream");
+            LFS_CUDA_LOG_STREAM_DESTROY(callback_stream_, "shutdown: destroy callback stream");
             callback_stream_ = nullptr;
         }
         callback_busy_ = false;
 
         if (metrics_stream_) {
-            LFS_CUDA_LOG_TEARDOWN(cudaStreamDestroy(metrics_stream_), metrics_stream_,
-                                  "shutdown: destroy metrics stream");
+            LFS_CUDA_LOG_STREAM_DESTROY(metrics_stream_, "shutdown: destroy metrics stream");
             metrics_stream_ = nullptr;
         }
 
         if (training_stream_) {
             destroySyncPrimitives();
-            LFS_CUDA_LOG_TEARDOWN(cudaStreamDestroy(training_stream_), training_stream_,
-                                  "shutdown: destroy training stream");
+            LFS_CUDA_LOG_STREAM_DESTROY(training_stream_, "shutdown: destroy training stream");
             training_stream_ = nullptr;
         }
 
@@ -6145,13 +6138,10 @@ namespace lfs::training {
     }
 
     lfs::core::Tensor Trainer::get_random_background_for_camera(int width, int height, int iteration) {
-        const size_t required_size = 3 * static_cast<size_t>(height) * static_cast<size_t>(width);
+        const lfs::core::TensorShape shape{3, static_cast<size_t>(height), static_cast<size_t>(width)};
 
-        if (!random_bg_buffer_.is_valid() || random_bg_buffer_.numel() != required_size) {
-            random_bg_buffer_ = lfs::core::Tensor::empty(
-                {3, static_cast<size_t>(height), static_cast<size_t>(width)},
-                lfs::core::Device::CUDA,
-                lfs::core::DataType::Float32);
+        if (!random_bg_buffer_.is_valid() || random_bg_buffer_.shape() != shape) {
+            random_bg_buffer_ = lfs::core::Tensor::empty(shape, lfs::core::Device::CUDA, lfs::core::DataType::Float32);
         }
 
         kernels::launch_random_background(
@@ -6898,7 +6888,7 @@ namespace lfs::training {
                                     auto rasterize_result = gsplat_rasterize_forward(
                                         *cam, strategy_->get_model(), bg,
                                         0, 0, 0, 0,
-                                        1.0f, false,
+                                        1.0f, step_params.mip_filter,
                                         (normal_supervision_started && (step_params.normal_loss_weight > 0.f ||
                                                                         step_params.normal_consistency_weight > 0.f))
                                             ? GsplatRenderMode::RGB_D_N
@@ -7678,6 +7668,10 @@ namespace lfs::training {
                                             depth_pixel_weight);
 
                                         tile_loss = tile_loss + depth_loss_scalar_;
+                                        // Rendered against an external depth target, the loss changes along the
+                                        // ray-depth coordinate: this step leaves the coordinate alone.
+                                        if (depth_weight_now > 0.0f)
+                                            strategy_->get_optimizer().skip_ray_depth_step();
                                     }
                                 } else {
                                     LOG_WARN("Skipping depth loss for '{}': rendered depth shape and target depth shape differ",
@@ -7852,6 +7846,8 @@ namespace lfs::training {
                                                 gsplat_ctx ? gsplat_ctx->camera_rays.ptr<float>() : nullptr,
                                                 gsplat_ctx && gsplat_ctx->camera_model == ::CameraModelType::EQUIRECTANGULAR);
                                             tile_loss = tile_loss + normal_prior_depth_scalar_;
+                                            if (step_params.normal_loss_weight > 0.0f)
+                                                strategy_->get_optimizer().skip_ray_depth_step();
                                         }
                                     }
 
@@ -8775,9 +8771,10 @@ namespace lfs::training {
                                 RenderOutput rendered_timelapse_output;
                                 if (step_params.gut) {
                                     rendered_timelapse_output = gsplat_rasterize(*cam_to_use, strategy_->get_model(), background_,
-                                                                                 1.0f, false, GsplatRenderMode::RGB, true);
+                                                                                 1.0f, step_params.mip_filter, GsplatRenderMode::RGB, true);
                                 } else {
-                                    rendered_timelapse_output = fast_rasterize(*cam_to_use, strategy_->get_model(), background_);
+                                    rendered_timelapse_output = fast_rasterize(*cam_to_use, strategy_->get_model(), background_,
+                                                                               step_params.mip_filter);
                                 }
 
                                 // Get folder name to save in by stripping file extension

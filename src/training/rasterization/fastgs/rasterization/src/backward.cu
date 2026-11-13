@@ -72,6 +72,7 @@ void fast_lfs::rasterization::backward(
     const float cx,
     const float cy,
     bool mip_filter,
+    float dilation_scale,
     DensificationType densification_type,
     FusedAdamSettings fused_adam,
     // model-truth shN-rest decode binds (independent of fused Adam
@@ -229,6 +230,7 @@ void fast_lfs::rasterization::backward(
                 clip_right,
                 clip_top,
                 clip_bottom,
+                dilation_scale,
                 sh_layout_slots,
                 fused_adam,
                 shN_value_bounds,
@@ -242,6 +244,7 @@ void fast_lfs::rasterization::backward(
                                        fused_adam.flatten_reg_weight <= 0.0f &&
                                        !fused_adam.scale_reg_log &&
                                        !fused_adam.per_splat_mean_step &&
+                                       fused_adam.ray_depth_state == nullptr &&
                                        fused_adam.rendered_count == nullptr;
         auto launch_preprocess_backward_for_mip = [&]<int ACTIVE_SH_BASES, bool DISABLED_FEATURES, bool CAMERA_GRAD>() {
             if (mip_filter) {
@@ -254,9 +257,7 @@ void fast_lfs::rasterization::backward(
             if (grad_w2c != nullptr) {
                 // The camera gradient is only instantiated in the runtime-generic kernel.
                 launch_preprocess_backward_for_mip.template operator()<ACTIVE_SH_BASES, false, true>();
-            } else if (force_generic_preprocess_for_testing()) {
-                launch_preprocess_backward_for_mip.template operator()<ACTIVE_SH_BASES, false, false>();
-            } else if (disabled_features) {
+            } else if (disabled_features && !force_generic_preprocess_for_testing()) {
                 launch_preprocess_backward_for_mip.template operator()<ACTIVE_SH_BASES, true, false>();
             } else {
                 launch_preprocess_backward_for_mip.template operator()<ACTIVE_SH_BASES, false, false>();
