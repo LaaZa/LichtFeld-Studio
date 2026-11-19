@@ -7,6 +7,7 @@
 #include "../noise_infill.hpp"
 #include "../rasterization/fast_rasterizer.hpp"
 #include "../rasterization/gsplat_rasterizer.hpp"
+#include "core/camera_views.hpp"
 #include "core/cuda/lanczos_resize/lanczos_resize.hpp"
 #include "core/cuda/undistort/undistort.hpp"
 #include "core/events.hpp"
@@ -28,6 +29,7 @@
 #include "kernels/image_kernels.hpp"
 #include "lfs/kernels/ssim.cuh"
 #include "mesh_mask_kernels.cuh"
+#include "training/components/calibration_correction.hpp"
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -177,6 +179,12 @@ namespace lfs::training {
             }
         };
 
+        bool score_distorted_grid(const lfs::core::Camera& camera,
+                                  const lfs::core::param::TrainingParameters& params) {
+            return params.optimization.eval_space == lfs::core::param::EvalSpace::Distorted &&
+                   !is_view(camera.undistort_params());
+        }
+
         lfs::io::LoadParams evaluation_load_params(const lfs::core::Camera& camera,
                                                    const lfs::core::param::TrainingParameters& params) {
             lfs::io::LoadParams load_params;
@@ -194,7 +202,7 @@ namespace lfs::training {
             load_params.skip_blob_cache = true;
             load_params.cuda_stream = lfs::core::getCurrentCUDAStream();
             if (params.optimization.undistort && camera.is_undistort_prepared() &&
-                params.optimization.eval_space == lfs::core::param::EvalSpace::Undistorted)
+                !score_distorted_grid(camera, params))
                 load_params.undistort = &camera.undistort_params();
             return load_params;
         }
@@ -667,7 +675,7 @@ namespace lfs::training {
         try {
             const bool undistorted_reference =
                 params.optimization.undistort && camera.is_undistort_prepared() &&
-                params.optimization.eval_space == lfs::core::param::EvalSpace::Undistorted;
+                !score_distorted_grid(camera, params);
             if (cached_inputs) {
                 inputs = *cached_inputs;
                 if (!inputs.gt_image.is_valid() || inputs.source_width <= 0 ||
@@ -718,7 +726,10 @@ namespace lfs::training {
 
             if (!cached_inputs) {
                 if (mask_folder) {
-                    const auto mask_path = mask_folder->find(camera.image_name());
+                    const auto mask_path = mask_folder->find(
+                        scaled_undistort && is_view(*scaled_undistort)
+                            ? lfs::core::photograph_image_name(camera.image_name())
+                            : camera.image_name());
                     if (mask_path.empty())
                         return evaluation_error(std::format("no evaluation mask for '{}' in the mask folder",
                                                             camera.image_name()),
@@ -766,8 +777,7 @@ namespace lfs::training {
             int render_height = inputs.source_height;
             float dilation_scale = 1.0f;
             const bool distorted_evaluation =
-                scaled_undistort &&
-                params.optimization.eval_space == lfs::core::param::EvalSpace::Distorted;
+                scaled_undistort && !undistorted_reference;
             const bool native_gut_evaluation = distorted_evaluation && params.optimization.gut;
             const bool warp_to_distorted = distorted_evaluation && !native_gut_evaluation;
             // Geometric masks follow the lens the scored image was taken with: the source lens when
@@ -1462,6 +1472,8 @@ namespace lfs::training {
             }
             report_file << std::setw(15) << m.elapsed_time
                         << std::setw(15) << m.num_gaussians << "\n";
+            if (!m.alignment_summary.empty())
+                report_file << m.alignment_summary << "\n";
         }
 
         report_file.close();
@@ -1693,6 +1705,7 @@ namespace lfs::training {
                                                                               : std::vector<std::string>{};
         size_t skipped_images = 0;
         size_t evaluated_images = 0;
+        std::vector<float> displacement_lengths;
         size_t saved_images = 0;
         std::optional<std::pair<int, int>> lpips_preflight_size;
         cudaEvent_t lpips_start_event = nullptr;
@@ -1783,7 +1796,7 @@ namespace lfs::training {
             const auto prepared_validity = prepared->validity_mask;
             const bool distorted_coordinates =
                 _params.optimization.undistort && cam->is_undistort_prepared() &&
-                _params.optimization.eval_space == lfs::core::param::EvalSpace::Distorted;
+                score_distorted_grid(*cam, _params);
             view.height = static_cast<int>(gt_image.shape()[1]);
             view.width = static_cast<int>(gt_image.shape()[2]);
             view.validity_mask_applied = prepared->validity_mask_applied;
@@ -1817,7 +1830,13 @@ namespace lfs::training {
             lfs::core::Tensor ssim_map;
             float psnr = 0.0f;
             float ssim = 0.0f;
+            lfs::core::Tensor displacement;
             try {
+                if (_params.optimization.calibration_correction) {
+                    r_output.image = CalibrationCorrection::align_for_scoring(
+                        r_output.image, image_as_float01(gt_image), headline_pixels, displacement, &render_raw);
+                    r_output.image = image_for_metrics(r_output.image, view.bit_depth);
+                }
                 psnr = _psnr_metric->compute(r_output.image, gt_image, headline_pixels);
                 ssim = _ssim_metric->compute_evaluation(r_output.image, gt_image, headline_pixels,
                                                         score_mask_sets ? erodes_ssim_windows(headline) : erode_ssim_mask,
@@ -1843,6 +1862,11 @@ namespace lfs::training {
             view.ssim = ssim;
             view.masked = headline_pixels.is_valid();
             evaluated_images++;
+            if (displacement.is_valid()) {
+                const auto offsets = displacement.to_vector();
+                for (size_t i = 0; i < offsets.size(); i += 2)
+                    displacement_lengths.push_back(std::hypot(offsets[i], offsets[i + 1]));
+            }
 
             struct MaskSet {
                 std::string_view name;
@@ -2288,6 +2312,14 @@ namespace lfs::training {
 
         if (skipped_images > 0) {
             LOG_WARN("Eval: skipped {} / {} images due to mask/metric failures", skipped_images, val_dataset_size);
+        }
+        if (_params.optimization.calibration_correction && source.report_scores) {
+            std::ranges::sort(displacement_lengths);
+            const auto n = displacement_lengths.size();
+            const float median = n ? .5f * (displacement_lengths[(n - 1) / 2] + displacement_lengths[n / 2]) : 0.f;
+            result.alignment_summary = std::format("Aligned {} views, displacement median {:.3f} px, maximum {:.3f} px",
+                                                   evaluated_images, median, n ? displacement_lengths.back() : 0.f);
+            LOG_INFO("{}", result.alignment_summary);
         }
         if (evaluated_images == 0) {
             LOG_WARN("Eval: no images were successfully evaluated at iteration {}", iteration);

@@ -495,6 +495,15 @@ namespace lfs::vis {
         };
         ContentBounds getContentBounds(const glm::ivec2& viewport_size) const;
 
+        struct GTComparisonGuideCamera {
+            GTRenderCamera camera;
+            glm::ivec2 render_size;
+        };
+        [[nodiscard]] std::optional<GTComparisonGuideCamera> getGTComparisonGuideCamera() const {
+            std::lock_guard lock(vulkan_mesh_frame_mutex_);
+            return vulkan_mesh_frame_.gt_camera;
+        }
+
         // Current camera tracking for GT comparison
         void setCurrentCameraId(int cam_id) {
             const bool changed = camera_interaction_service_.currentCameraId() != cam_id;
@@ -698,6 +707,7 @@ namespace lfs::vis {
             lfs::vis::VulkanEnvironmentParams environment;
             lfs::vis::VulkanDepthBlitParams depth_blit;
             lfs::vis::VulkanSplitViewParams split_view;
+            std::optional<GTComparisonGuideCamera> gt_camera;
         };
         void setVulkanMeshFrame(VulkanMeshFrame frame);
         [[nodiscard]] VulkanMeshFrame getVulkanMeshFrame() const {
@@ -1040,16 +1050,20 @@ namespace lfs::vis {
         bool lod_controller_needs_sync_traversal_ = false;
         std::uint64_t lod_controller_page_map_generation_ = 0;
         // Cached SH0→RGB derivation for the point-cloud Vulkan path. Refreshed
-        // only when the source sh0_raw() pointer/size changes so the Vulkan
-        // renderer's per-tensor upload cache stays warm across frames.
+        // only when the source sh0_raw() pointer/size or the data revision changes
+        // so the Vulkan renderer's per-tensor upload cache stays warm across frames.
         lfs::core::Tensor point_cloud_colors_cache_;
         const void* point_cloud_colors_cache_key_ = nullptr;
         std::size_t point_cloud_colors_cache_size_ = 0;
+        std::uint64_t point_cloud_colors_cache_revision_ = 0;
         // Submit serial of the last frame that drew the point cloud; its buffers
         // are released only after that frame has retired on the GPU.
         std::uint64_t point_cloud_last_frame_serial_ = 0;
-        std::uint64_t point_cloud_data_revision_ = 0;
-        std::uint64_t point_cloud_preview_selection_revision_ = 0;
+        // Advanced by every markDirty carrying SPLATS (SELECTION for the selection
+        // revision) for a reason other than SettingsChange, from any thread: the
+        // data may have changed in place, so the point cloud uploads it again.
+        std::atomic<std::uint64_t> point_cloud_data_revision_{0};
+        std::atomic<std::uint64_t> point_cloud_preview_selection_revision_{0};
         // One texel keeps mesh-only independent panels renderable without
         // allocating or uploading a full-size background each frame.
         std::shared_ptr<lfs::core::Tensor> mesh_only_split_background_;
@@ -1092,7 +1106,6 @@ namespace lfs::vis {
         glm::ivec2 vulkan_viewport_image_alloc_size_{0, 0};
         glm::ivec2 vulkan_viewport_coordinate_size_{0, 0};
         bool vulkan_viewport_image_flip_y_ = false;
-        glm::ivec2 vulkan_gt_comparison_content_size_{0, 0};
         struct GTComparisonImageCacheEntry {
             int camera_uid = -1;
             GTComparisonMode mode = GTComparisonMode::RGB;

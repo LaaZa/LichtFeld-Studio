@@ -657,6 +657,9 @@ def reset_camera() -> None:
 def set_vr_active(active: bool) -> None:
     """Enter or exit VR viewing"""
 
+def detect_vr() -> None:
+    """Look again for a VR headset that was connected after startup"""
+
 def recenter_vr() -> None:
     """Put the VR view back at the desktop camera"""
 
@@ -2551,6 +2554,15 @@ class OptimizationParams:
 
     @pose_opt.setter
     def pose_opt(self, arg: bool, /) -> None: ...
+
+    @property
+    def calibration_correction(self) -> bool:
+        """
+        Fits a small, smooth warp to every training photo that absorbs what the calibration missed (rolling shutter, stabilization, focus breathing, a slightly wrong pose), so photos that disagree by a pixel no longer blur the scene. Starts at step 1000, scaled with the step count; evaluation then scores each held-out view after aligning the render to the photo.
+        """
+
+    @calibration_correction.setter
+    def calibration_correction(self, arg: bool, /) -> None: ...
 
     @property
     def ppisp(self) -> bool:
