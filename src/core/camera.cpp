@@ -204,6 +204,7 @@ namespace lfs::core {
             params.dst_fx, params.dst_fy, params.dst_cx, params.dst_cy, Tensor{}, Tensor{},
             CameraModelType::PINHOLE, image_name, _image_path, _mask_path,
             params.dst_width, params.dst_height, uid, _camera_id, _depth_path, _normal_path);
+        view->_photograph_uid = _uid;
         view->_split = _split;
         view->_has_alpha = _has_alpha;
         view->_has_image = _has_image;
@@ -235,6 +236,7 @@ namespace lfs::core {
           _FoVy(other._FoVy),
           _uid(other._uid),
           _camera_id(other._camera_id),
+          _photograph_uid(other._photograph_uid),
           _focal_x(other._focal_x),
           _focal_y(other._focal_y),
           _center_x(other._center_x),
@@ -249,6 +251,8 @@ namespace lfs::core {
           _mask_path(std::move(other._mask_path)),
           _depth_path(std::move(other._depth_path)),
           _normal_path(std::move(other._normal_path)),
+          _depth_prior_size(other._depth_prior_size),
+          _normal_prior_size(other._normal_prior_size),
           _has_alpha(other._has_alpha),
           _has_image(other._has_image),
           _split(other._split),
@@ -310,6 +314,7 @@ namespace lfs::core {
             _FoVy = other._FoVy;
             _uid = other._uid;
             _camera_id = other._camera_id;
+            _photograph_uid = other._photograph_uid;
             _focal_x = other._focal_x;
             _focal_y = other._focal_y;
             _center_x = other._center_x;
@@ -324,6 +329,8 @@ namespace lfs::core {
             _mask_path = std::move(other._mask_path);
             _depth_path = std::move(other._depth_path);
             _normal_path = std::move(other._normal_path);
+            _depth_prior_size = other._depth_prior_size;
+            _normal_prior_size = other._normal_prior_size;
             _has_alpha = other._has_alpha;
             _has_image = other._has_image;
             _split = other._split;
@@ -378,6 +385,7 @@ namespace lfs::core {
     Camera::Camera(const Camera& other, const Tensor& transform)
         : _uid(other._uid),
           _camera_id(other._camera_id),
+          _photograph_uid(other._photograph_uid),
           _focal_x(other._focal_x),
           _focal_y(other._focal_y),
           _center_x(other._center_x),
@@ -392,6 +400,8 @@ namespace lfs::core {
           _mask_path(other._mask_path),
           _depth_path(other._depth_path),
           _normal_path(other._normal_path),
+          _depth_prior_size(other._depth_prior_size),
+          _normal_prior_size(other._normal_prior_size),
           _has_alpha(other._has_alpha),
           _has_image(other._has_image),
           _split(other._split),
@@ -402,7 +412,8 @@ namespace lfs::core {
           _image_size_loaded(other._image_size_loaded),
           _source_image_width(other._source_image_width),
           _source_image_height(other._source_image_height),
-          _cam_position(other._cam_position),
+          // Its own position, like the transform the caller hands it: moving one camera never moves the other.
+          _cam_position(other._cam_position.is_valid() ? other._cam_position.clone() : Tensor{}),
           _FoVx(other._FoVx),
           _FoVy(other._FoVy) {
         _world_view_transform = transform;
@@ -652,12 +663,14 @@ namespace lfs::core {
 
     void Camera::set_depth_path(std::filesystem::path path) {
         _depth_path = std::move(path);
+        _depth_prior_size = {};
         _depth_quantization_step = -1.0f;
         release_depth_cache();
     }
 
     void Camera::set_normal_path(std::filesystem::path path) {
         _normal_path = std::move(path);
+        _normal_prior_size = {};
         release_normal_cache();
     }
 
