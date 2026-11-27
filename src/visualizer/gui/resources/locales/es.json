@@ -1337,6 +1337,7 @@
     "scale": "Escalar",
     "mirror": "Reflejar",
     "crop": "Recortar",
+    "roi": "ROI",
     "align": "Alinear",
     "scale_distance": "Escalar distancia"
   },
@@ -1351,6 +1352,7 @@
     "enable_crop_box": "Activar caja de recorte",
     "enable_crop_polygon": "Activar polígono de recorte",
     "invert_crop": "Invertir recorte",
+    "roi_ellipsoid_unsupported": "El elipsoide no es compatible como ROI de entrenamiento. Cámbielo por una caja o un polígono.",
     "crop_roi_settings": "Ajustes de ROI de recorte",
     "rejected_splat_lr_scale": "Escala de LR de splats rechazados",
     "outside_roi_loss_weight": "Peso de pérdida fuera de la ROI",
@@ -1957,6 +1959,7 @@
     "action.toggle_ui": "Alternar UI",
     "action.toggle_left_dock": "Contraer/expandir el panel izquierdo",
     "action.toggle_right_dock": "Contraer/expandir el panel derecho",
+    "action.toggle_bottom_dock": "Mostrar u ocultar el panel inferior",
     "action.toggle_fullscreen": "Alternar pantalla completa",
     "action.open_preferences": "Abrir preferencias",
     "action.toggle_mcp_server": "Activar/desactivar servidor MCP",

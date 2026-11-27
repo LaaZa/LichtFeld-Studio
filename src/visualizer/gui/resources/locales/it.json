@@ -1350,6 +1350,7 @@
     "scale": "Scala",
     "mirror": "Specchia",
     "crop": "Ritaglia",
+    "roi": "ROI",
     "align": "Allinea",
     "scale_distance": "Scala distanza"
   },
@@ -1364,6 +1365,7 @@
     "enable_crop_box": "Attiva scatola di ritaglio",
     "enable_crop_polygon": "Attiva poligono di ritaglio",
     "invert_crop": "Inverti ritaglio",
+    "roi_ellipsoid_unsupported": "Gli ellissoidi non sono supportati come ROI di addestramento. Scegli una scatola o un poligono.",
     "crop_roi_settings": "Impostazioni ROI di ritaglio",
     "rejected_splat_lr_scale": "Scala LR degli splat esclusi",
     "outside_roi_loss_weight": "Peso della loss fuori dalla ROI",
@@ -1970,6 +1972,7 @@
     "action.toggle_ui": "Attiva UI",
     "action.toggle_left_dock": "Comprimi/espandi il dock sinistro",
     "action.toggle_right_dock": "Comprimi/espandi il dock destro",
+    "action.toggle_bottom_dock": "Mostra o nascondi il dock inferiore",
     "action.toggle_fullscreen": "Attiva schermo intero",
     "action.open_preferences": "Apri preferenze",
     "action.toggle_mcp_server": "Attiva/disattiva server MCP",

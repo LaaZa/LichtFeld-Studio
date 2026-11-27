@@ -1727,6 +1727,7 @@ namespace lfs::vis::project {
                     optional_field("left_dock_width", &gui::PanelLayoutProjectState::left_dock_width),
                     optional_field("left_dock_collapsed", &gui::PanelLayoutProjectState::left_dock_collapsed),
                     optional_field("right_dock_collapsed", &gui::PanelLayoutProjectState::right_dock_collapsed),
+                    optional_field("bottom_dock_collapsed", &gui::PanelLayoutProjectState::bottom_dock_collapsed),
                     optional_field("sequencer_visible", &gui::PanelLayoutProjectState::show_sequencer),
                     optional_field("bottom_dock_active_tab", &gui::PanelLayoutProjectState::bottom_dock_active_tab_id),
                     optional_field("tab_scroll_offset", &gui::PanelLayoutProjectState::tab_scroll_offset),
@@ -2064,7 +2065,7 @@ namespace lfs::vis::project {
                 {"VIEW", "tools.active_tool_id", string_parser([](const std::string_view value) {
                      static constexpr std::array builtins{
                          "builtin.select", "builtin.translate", "builtin.rotate",
-                         "builtin.scale", "builtin.mirror", "builtin.align", "builtin.cropbox"};
+                         "builtin.scale", "builtin.mirror", "builtin.align", "builtin.cropbox", "builtin.crop", "builtin.roi"};
                      const auto tools = UnifiedToolRegistry::instance().getAllTools();
                      return std::ranges::find(builtins, value) != builtins.end() ||
                             std::ranges::any_of(tools, [&](const auto* tool) {
@@ -3376,6 +3377,7 @@ namespace lfs::vis::project {
             // Older projects have no collapse flags: start their docks expanded.
             layout.left_dock_collapsed = false;
             layout.right_dock_collapsed = false;
+            layout.bottom_dock_collapsed = false;
             (void)read_fields(
                 fixed,
                 layout,
@@ -4026,7 +4028,7 @@ namespace lfs::vis::project {
                                     "active_tool_id")
                     .value_or(std::string{});
 
-            if (active_tool == "builtin.cropbox") {
+            if (active_tool == "builtin.cropbox" || active_tool == "builtin.crop" || active_tool == "builtin.roi") {
                 const auto operation =
                     scalar<std::string>(*tools,
                                         "crop_operation")
@@ -4034,10 +4036,8 @@ namespace lfs::vis::project {
                 const auto gizmo_type =
                     operation == "rotate" ? "rotate" : operation == "scale" ? "scale"
                                                                             : "translate";
-                editor.setActiveOperator(
-                    "builtin.cropbox", gizmo_type);
-                registry.setActiveTool(
-                    "builtin.cropbox");
+                editor.setActiveOperator(active_tool, gizmo_type);
+                registry.setActiveTool(active_tool);
                 gui_manager->gizmo()
                     .setCropToolShape(
                         scalar<std::string>(

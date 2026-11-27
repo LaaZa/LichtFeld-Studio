@@ -93,6 +93,7 @@
 #include "training/trainer.hpp"
 #include "training/training_manager.hpp"
 #include "visualizer/app_store.hpp"
+#include "visualizer/core/editor_context.hpp"
 #include "visualizer/scene_coordinate_utils.hpp"
 #include "visualizer_impl.hpp"
 #include "window/vulkan_context.hpp"
@@ -3285,6 +3286,32 @@ namespace lfs::vis::gui {
                                    4.5f);
             }
 
+            // The dataset point cloud's ROI and Crop, and the training ROI, are always drawn in their role colour.
+            const auto point_crop = [&](const core::NodeId id) -> const core::SceneNode* {
+                if (!scene_manager)
+                    return nullptr;
+                const auto& scene = scene_manager->getScene();
+                const auto* node = scene.getNodeById(id);
+                const auto* parent = node ? scene.getNodeById(node->parent_id) : nullptr;
+                return node && ((parent && isPreTrainingPointCloud(scene, *parent)) ||
+                                isTrainingRoi(scene, *node))
+                           ? node
+                           : nullptr;
+            };
+            const auto role_color = [](const core::CropRole role) {
+                return role == core::CropRole::Primary ? glm::vec3(0.7f, 0.3f, 1.0f)
+                                                       : glm::vec3(1.0f, 1.0f, 0.0f);
+            };
+            const auto crop_color = [&](const core::NodeId id, const glm::vec3& legacy_color) {
+                const auto* node = point_crop(id);
+                return node ? role_color(node->cropRole().value_or(core::CropRole::Primary)) : legacy_color;
+            };
+            const auto pending_belongs_to = [&](const core::NodeId id) {
+                if (!point_crop(id))
+                    return true;
+                const auto* gui = services().guiOrNull();
+                return gui && gui->gizmo().cropToolVolumeNodeId() == id;
+            };
             const auto selected_cropbox_is_visible = [&]() {
                 if (!scene_state || !scene_manager)
                     return true;
@@ -3298,7 +3325,8 @@ namespace lfs::vis::gui {
                 return activeVolumeGuideVisible(gizmo.ellipsoid_affects_render, selected_id, scene_state->ellipsoids);
             };
 
-            if (gizmo.cropbox_active && selected_cropbox_is_visible()) {
+            if (gizmo.cropbox_active && selected_cropbox_is_visible() &&
+                (!scene_manager || !point_crop(scene_manager->getSelectedNodeCropBoxId()))) {
                 appendProjectedBox(params, panel, settings,
                                    gizmo.cropbox_min,
                                    gizmo.cropbox_max,
@@ -3307,7 +3335,8 @@ namespace lfs::vis::gui {
                                    2.0f);
             }
 
-            if (gizmo.ellipsoid_active && selected_ellipsoid_is_visible()) {
+            if (gizmo.ellipsoid_active && selected_ellipsoid_is_visible() &&
+                (!scene_manager || !point_crop(scene_manager->getSelectedNodeEllipsoidId()))) {
                 appendProjectedEllipsoid(params, panel, settings,
                                          gizmo.ellipsoid_radii,
                                          gizmo.ellipsoid_transform,
@@ -3317,7 +3346,7 @@ namespace lfs::vis::gui {
 
             const auto selected_polygon_id = scene_manager ? scene_manager->getSelectedNodeCropPolygonId()
                                                            : core::NULL_NODE;
-            if (gizmo.crop_polygon_active &&
+            if (gizmo.crop_polygon_active && !point_crop(selected_polygon_id) &&
                 (!scene_state || activeVolumeGuideVisible(gizmo.crop_polygon_affects_render, selected_polygon_id,
                                                           scene_state->crop_polygons))) {
                 appendProjectedCropPolygon(params, panel, settings,
@@ -3330,7 +3359,17 @@ namespace lfs::vis::gui {
 
             // Outline being drawn: placed vertices and a rubber band to the cursor on the plane.
             if (!gizmo.crop_polygon_draft.empty()) {
-                const glm::vec4 draft_color = cropGuideColor(glm::vec3(1.0f, 1.0f, 0.0f), false, 0.0f);
+                glm::vec3 draft_base(1.0f, 1.0f, 0.0f);
+                if (scene_manager) {
+                    const auto selected = scene_manager->getSelectedNodeIds();
+                    const auto& scene = scene_manager->getScene();
+                    const auto* node = selected.size() == 1 ? scene.getNodeById(selected.front()) : nullptr;
+                    if (node && node->type != core::NodeType::POINTCLOUD)
+                        node = scene.getNodeById(node->parent_id);
+                    if (node && isPreTrainingPointCloud(scene, *node))
+                        draft_base = role_color(activeCropRole(node));
+                }
+                const glm::vec4 draft_color = cropGuideColor(draft_base, false, 0.0f);
                 const auto& draft = gizmo.crop_polygon_draft;
                 for (size_t i = 0; i + 1 < draft.size(); ++i)
                     addProjectedOverlayLine(params, panel, settings, draft[i], draft[i + 1], draft_color, 2.0f);
@@ -3345,10 +3384,10 @@ namespace lfs::vis::gui {
 
             const core::NodeId selected_cropbox_id = scene_manager->getSelectedNodeCropBoxId();
             for (const auto& cb : scene_state->cropboxes) {
-                if (!cb.data || !cb.effectively_visible || cb.node_id != selected_cropbox_id) {
+                if (!cb.data || !cb.effectively_visible || (cb.node_id != selected_cropbox_id && !point_crop(cb.node_id))) {
                     continue;
                 }
-                const bool use_pending = gizmo.cropbox_active;
+                const bool use_pending = gizmo.cropbox_active && cb.node_id == selected_cropbox_id && pending_belongs_to(cb.node_id);
                 const glm::vec3 box_min = use_pending ? gizmo.cropbox_min : cb.data->min;
                 const glm::vec3 box_max = use_pending ? gizmo.cropbox_max : cb.data->max;
                 const glm::mat4 world_transform = use_pending ? gizmo.cropbox_transform : cb.world_transform;
@@ -3357,37 +3396,37 @@ namespace lfs::vis::gui {
                                    box_min,
                                    box_max,
                                    world_transform,
-                                   cropGuideColor(cb.data->color, cb.data->inverse, flash),
+                                   cropGuideColor(crop_color(cb.node_id, cb.data->color), point_crop(cb.node_id) ? false : cb.data->inverse, flash),
                                    cb.data->line_width + flash * 4.0f);
             }
 
             const core::NodeId selected_ellipsoid_id = scene_manager->getSelectedNodeEllipsoidId();
             for (const auto& el : scene_state->ellipsoids) {
-                if (!el.data || !el.effectively_visible || el.node_id != selected_ellipsoid_id) {
+                if (!el.data || !el.effectively_visible || (el.node_id != selected_ellipsoid_id && !point_crop(el.node_id))) {
                     continue;
                 }
-                const bool use_pending = gizmo.ellipsoid_active;
+                const bool use_pending = gizmo.ellipsoid_active && el.node_id == selected_ellipsoid_id && pending_belongs_to(el.node_id);
                 const glm::vec3 radii = use_pending ? gizmo.ellipsoid_radii : el.data->radii;
                 const glm::mat4 world_transform = use_pending ? gizmo.ellipsoid_transform : el.world_transform;
                 const float flash = std::clamp(el.data->flash_intensity, 0.0f, 1.0f);
                 appendProjectedEllipsoid(params, panel, settings,
                                          radii,
                                          world_transform,
-                                         cropGuideColor(el.data->color, el.data->inverse, flash),
+                                         cropGuideColor(crop_color(el.node_id, el.data->color), point_crop(el.node_id) ? false : el.data->inverse, flash),
                                          el.data->line_width + flash * 4.0f);
             }
 
             for (const auto& polygon : scene_state->crop_polygons) {
-                if (!polygon.data || !polygon.effectively_visible || polygon.node_id != selected_polygon_id) {
+                if (!polygon.data || !polygon.effectively_visible || (polygon.node_id != selected_polygon_id && !point_crop(polygon.node_id))) {
                     continue;
                 }
                 const float flash = std::clamp(polygon.data->flash_intensity, 0.0f, 1.0f);
+                const bool use_pending = gizmo.crop_polygon_active && polygon.node_id == selected_polygon_id && pending_belongs_to(polygon.node_id);
                 appendProjectedCropPolygon(params, panel, settings,
-                                           polygon.data->vertices,
-                                           polygon.data->half_depth,
-                                           gizmo.crop_polygon_active ? gizmo.crop_polygon_transform
-                                                                     : polygon.world_transform,
-                                           cropGuideColor(polygon.data->color, polygon.data->inverse, flash),
+                                           use_pending ? gizmo.crop_polygon_vertices : polygon.data->vertices,
+                                           use_pending ? gizmo.crop_polygon_half_depth : polygon.data->half_depth,
+                                           use_pending ? gizmo.crop_polygon_transform : polygon.world_transform,
+                                           cropGuideColor(crop_color(polygon.node_id, polygon.data->color), point_crop(polygon.node_id) ? false : polygon.data->inverse, flash),
                                            polygon.data->line_width + flash * 4.0f);
             }
         }
@@ -4806,6 +4845,9 @@ namespace lfs::vis::gui {
         ops.set_foreground = [](void* host, bool fg) {
             static_cast<RmlPanelHost*>(host)->setForeground(fg);
         };
+        ops.set_panel_id = [](void* host, const char* panel_id) {
+            static_cast<RmlPanelHost*>(host)->setPanelId(panel_id);
+        };
         ops.set_floating = [](void* host, bool floating) {
             static_cast<RmlPanelHost*>(host)->setFloating(floating);
         };
@@ -5415,9 +5457,20 @@ namespace lfs::vis::gui {
             if (viewer_) {
                 SceneManager* const scene_manager = viewer_->getSceneManager();
                 std::optional<SceneRenderState> overlay_scene_state;
-                // Polygons have no render setting; their outline follows the selection.
+                // Polygons have no render setting; their outline follows the selection. Role volumes
+                // of the dataset point cloud and the training ROI are drawn whenever they exist.
+                const auto has_role_volume = [scene_manager](const core::SceneNode* owner) {
+                    const auto& scene = scene_manager->getScene();
+                    return owner && std::ranges::any_of(owner->children, [&scene](const core::NodeId id) {
+                               const auto* child = scene.getNodeById(id);
+                               return child && child->cropRole();
+                           });
+                };
                 if (scene_manager && (settings.show_crop_box || settings.show_ellipsoid ||
-                                      scene_manager->getSelectedNodeCropPolygonId() != core::NULL_NODE)) {
+                                      scene_manager->getSelectedNodeCropPolygonId() != core::NULL_NODE ||
+                                      has_role_volume(scene_manager->getScene().getDatasetPointCloudNode()) ||
+                                      has_role_volume(scene_manager->getScene().getNodeById(
+                                          scene_manager->getScene().getTrainingModelNodeId())))) {
                     overlay_scene_state =
                         scene_manager->buildRenderState({.metadata_only = true});
                 }
@@ -5647,25 +5700,43 @@ namespace lfs::vis::gui {
         }
     }
 
-    void GuiManager::revealPanel(const std::string& id) {
+    void GuiManager::revealPanel(const std::string& id, const std::optional<PanelSpace> space) {
         if (!viewer_)
             return;
         if (!viewer_->isOnViewerThread()) {
-            viewer_->postWork(VisualizerImpl::WorkItem{.run = [this, id = std::string(id)] { revealPanel(id); }, .cancel = {}});
+            viewer_->postWork(VisualizerImpl::WorkItem{.run = [this, id, space] { revealPanel(id, space); }, .cancel = {}});
             return;
         }
         const auto panel = PanelRegistry::instance().get_panel(id);
-        if (!panel || !panel->enabled)
+        if (!panel || !panel->enabled || (space && panel->space != *space))
             return;
-        const bool right = panel->space == PanelSpace::MainPanelTab || panel->space == PanelSpace::SceneHeader;
-        if (!right && panel->space != PanelSpace::LeftDock)
-            return;
-        if (panel->space == PanelSpace::MainPanelTab)
+
+        using lfs::core::SideDock;
+        SideDock side;
+        bool collapsed;
+        switch (panel->space) {
+        case PanelSpace::MainPanelTab:
             focus_panel_name_ = id;
-        const bool collapsed = ui_visibility_resize_active_
-                                   ? (right ? ui_target_right_collapsed_ : ui_target_left_collapsed_)
-                                   : (right ? panel_layout_.isRightDockCollapsed() : panel_layout_.isLeftDockCollapsed());
-        const auto side = right ? lfs::core::SideDock::Right : lfs::core::SideDock::Left;
+            [[fallthrough]];
+        case PanelSpace::SceneHeader:
+            side = SideDock::Right;
+            collapsed = ui_visibility_resize_active_ ? ui_target_right_collapsed_ : panel_layout_.isRightDockCollapsed();
+            break;
+        case PanelSpace::LeftDock:
+            side = SideDock::Left;
+            collapsed = ui_visibility_resize_active_ ? ui_target_left_collapsed_ : panel_layout_.isLeftDockCollapsed();
+            break;
+        case PanelSpace::BottomDock:
+            // Enabling a plugin panel emits RevealPanel even during background setup.
+            if (space != PanelSpace::BottomDock)
+                return;
+            panel_layout_.setBottomDockActiveTab(id);
+            side = SideDock::Bottom;
+            collapsed = ui_visibility_resize_active_ ? ui_target_bottom_collapsed_ : panel_layout_.isBottomDockCollapsed();
+            break;
+        default:
+            return;
+        }
         side_dock_toggle_pending_.set(std::to_underlying(side), collapsed);
         lfs::python::request_redraw();
     }
@@ -5674,6 +5745,8 @@ namespace lfs::vis::gui {
         if (!viewer_)
             return;
         const auto request = [this, side] {
+            if (side == lfs::core::SideDock::Bottom && !panel_layout_.isBottomDockVisible())
+                return;
             side_dock_toggle_pending_.set(std::to_underlying(side));
             if (auto* wm = viewer_->getWindowManager())
                 wm->wakeEventLoop();
@@ -5717,6 +5790,7 @@ namespace lfs::vis::gui {
         const auto now = std::chrono::steady_clock::now();
         ui_visibility_target_hidden_ = ui_toggle_pending_ ? !ui_hidden_ : ui_hidden_;
         ui_target_left_collapsed_ = panel_layout_.isLeftDockCollapsed() != side_dock_toggle_pending_.test(std::to_underlying(lfs::core::SideDock::Left));
+        ui_target_bottom_collapsed_ = panel_layout_.isBottomDockCollapsed() != side_dock_toggle_pending_.test(std::to_underlying(lfs::core::SideDock::Bottom));
         ui_target_right_collapsed_ = panel_layout_.isRightDockCollapsed() != side_dock_toggle_pending_.test(std::to_underlying(lfs::core::SideDock::Right));
         ui_toggle_pending_ = false;
         side_dock_toggle_pending_.reset();
@@ -5748,6 +5822,7 @@ namespace lfs::vis::gui {
                 auto target_layout = panel_layout_;
                 target_layout.setSideDockCollapsed(lfs::core::SideDock::Left, ui_target_left_collapsed_);
                 target_layout.setSideDockCollapsed(lfs::core::SideDock::Right, ui_target_right_collapsed_);
+                target_layout.setSideDockCollapsed(lfs::core::SideDock::Bottom, ui_target_bottom_collapsed_);
                 target_layout.enforceWidthConstraints(
                     show_main_panel_, ui_visibility_target_hidden_, transition_screen);
                 ui_visibility_target_console_width_ = show_main_panel_ && !ui_visibility_target_hidden_ && window_states_["python_console"]
@@ -5772,6 +5847,7 @@ namespace lfs::vis::gui {
             // preserve, so commit directly and let the normal layout pass resolve it.
             panel_layout_.setSideDockCollapsed(lfs::core::SideDock::Left, ui_target_left_collapsed_);
             panel_layout_.setSideDockCollapsed(lfs::core::SideDock::Right, ui_target_right_collapsed_);
+            panel_layout_.setSideDockCollapsed(lfs::core::SideDock::Bottom, ui_target_bottom_collapsed_);
             ui_hidden_ = ui_visibility_target_hidden_;
             ui_visibility_layout_committed_ = true;
             viewer_->projectMarkSessionChapterCommitted("GUIL");
@@ -6323,6 +6399,17 @@ namespace lfs::vis::gui {
                 status_bar_h,
             };
 
+            const ScreenState shell_screen{.work_pos = {0.0f, panel_y}, .work_size = {screen_w, panel_h}};
+            const auto left = panel_layout_.computeLeftDockLayout(show_main_panel_, ui_hidden_, shell_screen);
+            const bool dragging = panel_layout_.isLeftDockResizing() && frame_input.mouse_down[0];
+            const bool over_left_edge =
+                PanelLayoutManager::leftDockResizeHovered(left, frame_input, panel_y, panel_h);
+            if (!block_underlay_input && left.panel_width > 0.0f && (dragging || over_left_edge)) {
+                // Paint inside the dock separator; the pointer band also extends into the viewport.
+                shell_regions.left_resize = {left.edge_min_x, panel_y,
+                                             left.panel_x + left.panel_width - left.edge_min_x, panel_h};
+                shell_regions.left_resize_active = dragging;
+            }
             rml_shell_frame_.render(shell_regions);
         }
 
@@ -6440,6 +6527,8 @@ namespace lfs::vis::gui {
         constexpr uint8_t kUiLayoutSettleFrames = 3;
         const bool python_console_visible = window_states_["python_console"];
         const bool left_dock_rendered = panel_layout_.willRenderLeftDock(show_main_panel_, ui_hidden_, screen);
+        const float bottom_dock_reserved_height =
+            panel_layout_.computeBottomDockReservedHeight(show_main_panel_, ui_hidden_, screen);
         const bool ui_layout_changed =
             std::abs(screen.work_pos.x - last_ui_layout_work_pos_.x) > 0.5f ||
             std::abs(screen.work_pos.y - last_ui_layout_work_pos_.y) > 0.5f ||
@@ -6448,7 +6537,7 @@ namespace lfs::vis::gui {
             std::abs(panel_layout_.getRightPanelWidth() - last_ui_layout_right_panel_w_) > 0.5f ||
             std::abs(panel_layout_.getScenePanelRatio() - last_ui_layout_scene_ratio_) > 0.0001f ||
             std::abs(panel_layout_.getPythonConsoleWidth() - last_ui_layout_python_console_w_) > 0.5f ||
-            std::abs(panel_layout_.getBottomDockHeight() - last_ui_layout_bottom_dock_h_) > 0.5f ||
+            std::abs(bottom_dock_reserved_height - last_ui_layout_bottom_dock_h_) > 0.5f ||
             std::abs(panel_layout_.getLeftDockWidth() - last_ui_layout_left_dock_w_) > 0.5f ||
             panel_layout_.isLeftDockCollapsed() != last_ui_layout_left_collapsed_ ||
             rightDockRendered() != last_ui_layout_right_rendered_ ||
@@ -6495,7 +6584,7 @@ namespace lfs::vis::gui {
             last_ui_layout_right_panel_w_ = panel_layout_.getRightPanelWidth();
             last_ui_layout_scene_ratio_ = panel_layout_.getScenePanelRatio();
             last_ui_layout_python_console_w_ = panel_layout_.getPythonConsoleWidth();
-            last_ui_layout_bottom_dock_h_ = panel_layout_.getBottomDockHeight();
+            last_ui_layout_bottom_dock_h_ = bottom_dock_reserved_height;
             last_ui_layout_left_dock_w_ = panel_layout_.getLeftDockWidth();
             last_ui_layout_left_collapsed_ = panel_layout_.isLeftDockCollapsed();
             last_ui_layout_right_rendered_ = rightDockRendered();
@@ -6706,7 +6795,7 @@ namespace lfs::vis::gui {
                                            });
         }
 
-        const float bottom_dock_h = std::max(panel_layout_.getBottomDockHeight(), 0.0f);
+        const float bottom_dock_h = bottom_dock_reserved_height;
         const auto bottom_dock_layout = panel_layout_.computeBottomDockHorizontalLayout(
             show_main_panel_, ui_hidden_, screen);
         const float bottom_dock_x = bottom_dock_layout.x;
@@ -6720,11 +6809,9 @@ namespace lfs::vis::gui {
                         glm::vec2{bottom_dock_x, bottom_dock_y},
                         glm::vec2{bottom_dock_w, bottom_dock_h});
         const bool pointer_over_bottom_dock_edge =
-            panel_layout_.isBottomDockVisible() &&
-            panel_input.mouse_x >= bottom_dock_x &&
-            panel_input.mouse_x < bottom_dock_x + bottom_dock_w &&
-            bottomDockResizeHitZone(bottom_dock_y, current_ui_scale_, bottom_dock_grip_h)
-                .contains(panel_input.mouse_y);
+            panel_layout_.isBottomDockExpanded() &&
+            bottom_dock_layout.containsResizePointer(panel_input.mouse_x, panel_input.mouse_y,
+                                                     bottom_dock_y, current_ui_scale_);
         const bool pointer_targets_bottom_dock =
             pointer_over_bottom_dock || pointer_over_bottom_dock_edge;
         if (pointer_targets_bottom_dock &&
@@ -6739,16 +6826,23 @@ namespace lfs::vis::gui {
         const bool bottom_dock_input_activity =
             bottom_dock_pointer_activity ||
             hasKeyboardActivity(sdl_input);
+        const auto make_bottom_dock_chrome = [&](const float height) {
+            return BottomDockLayout{
+                .pos = {bottom_dock_x, screen.work_pos.y + screen.work_size.y - height},
+                .size = {bottom_dock_w, height},
+                .grip_h = bottom_dock_grip_h,
+                .tab_bar_h = PanelLayoutManager::TAB_BAR_H * current_ui_scale_,
+                .separator_h = current_ui_scale_,
+            };
+        };
         const auto bottom_dock_active_before_input = panel_layout_.getBottomDockActiveTab();
-        rml_bottom_dock_.setVisible(panel_layout_.isBottomDockVisible());
-        if (panel_layout_.isBottomDockVisible()) {
-            BottomDockLayout bottom_dock_rml_layout;
-            bottom_dock_rml_layout.pos = {bottom_dock_x, bottom_dock_y};
-            bottom_dock_rml_layout.size = {bottom_dock_w, bottom_dock_h};
-            bottom_dock_rml_layout.grip_h = bottom_dock_grip_h;
-            bottom_dock_rml_layout.tab_bar_h = PanelLayoutManager::TAB_BAR_H * current_ui_scale_;
-            bottom_dock_rml_layout.separator_h = current_ui_scale_;
-            rml_bottom_dock_.processInput(bottom_dock_rml_layout, panel_input);
+        rml_bottom_dock_.setVisible(panel_layout_.isBottomDockExpanded());
+        if (panel_layout_.isBottomDockExpanded()) {
+            const auto bottom_dock_rml_layout = make_bottom_dock_chrome(bottom_dock_h);
+            if (reg.isPositionOverFloatingPanel(panel_input.mouse_x, panel_input.mouse_y))
+                rml_bottom_dock_.processInput(bottom_dock_rml_layout, maskInputForBlockedUi(panel_input));
+            else
+                rml_bottom_dock_.processInput(bottom_dock_rml_layout, panel_input);
             if (rml_bottom_dock_.wantsInput())
                 guiFocusState().want_capture_mouse = true;
             if (rml_bottom_dock_.wantsKeyboard())
@@ -6768,7 +6862,7 @@ namespace lfs::vis::gui {
             panel_layout_.renderBottomDock(draw_ctx, show_main_panel_, ui_hidden_,
                                            panel_input, screen);
         }
-        rml_bottom_dock_.setVisible(panel_layout_.isBottomDockVisible());
+        rml_bottom_dock_.setVisible(panel_layout_.isBottomDockExpanded());
         std::vector<TabSnapshot> bottom_dock_tab_snaps;
         const auto& bottom_dock_tabs = panel_layout_.bottomDockTabs();
         bottom_dock_tab_snaps.reserve(bottom_dock_tabs.size());
@@ -6780,13 +6874,10 @@ namespace lfs::vis::gui {
                 .closeable = true,
             });
         }
-        if (panel_layout_.isBottomDockVisible()) {
-            BottomDockLayout bottom_dock_rml_layout;
-            bottom_dock_rml_layout.pos = {bottom_dock_x, bottom_dock_y};
-            bottom_dock_rml_layout.size = {bottom_dock_w, bottom_dock_h};
-            bottom_dock_rml_layout.grip_h = bottom_dock_grip_h;
-            bottom_dock_rml_layout.tab_bar_h = PanelLayoutManager::TAB_BAR_H * current_ui_scale_;
-            bottom_dock_rml_layout.separator_h = current_ui_scale_;
+        if (panel_layout_.isBottomDockExpanded()) {
+            // Resize input can change the height this frame; draw at the new edge.
+            auto bottom_dock_rml_layout = make_bottom_dock_chrome(
+                panel_layout_.computeBottomDockReservedHeight(show_main_panel_, ui_hidden_, screen));
             bottom_dock_rml_layout.grip_hovered = panel_layout_.isBottomDockHoveringEdge();
             bottom_dock_rml_layout.grip_active = panel_layout_.isBottomDockResizing();
             rml_bottom_dock_.render(bottom_dock_rml_layout, bottom_dock_tab_snaps,
@@ -6965,7 +7056,9 @@ namespace lfs::vis::gui {
         rml_viewport_overlay_.setSideDocks(
             dock_controls_available && reg.has_panels(PanelSpace::LeftDock),
             panel_layout_.isLeftDockCollapsed(), dock_controls_available,
-            panel_layout_.isRightDockCollapsed());
+            panel_layout_.isRightDockCollapsed(),
+            dock_controls_available && panel_layout_.isBottomDockVisible(),
+            panel_layout_.isBottomDockCollapsed());
         RmlViewportOverlay::SplitDividerOverlayState split_divider_state;
         if (auto* const rendering = viewer_ ? viewer_->getRenderingManager() : nullptr;
             rendering && rendering->isSplitViewActive()) {
@@ -8154,6 +8247,7 @@ namespace lfs::vis::gui {
         panel_layout_.setPythonConsoleWidth(ui_visibility_target_console_width_);
         panel_layout_.setSideDockCollapsed(lfs::core::SideDock::Left, ui_target_left_collapsed_);
         panel_layout_.setSideDockCollapsed(lfs::core::SideDock::Right, ui_target_right_collapsed_);
+        panel_layout_.setSideDockCollapsed(lfs::core::SideDock::Bottom, ui_target_bottom_collapsed_);
         ui_hidden_ = ui_visibility_target_hidden_;
         if (viewer_) {
             viewer_->projectMarkSessionChapterCommitted("GUIL");
@@ -8657,6 +8751,14 @@ namespace lfs::vis::gui {
         // can update its cursor request even while the GUI is otherwise idle.
         if (right_panel_resize_edge_was_hovered_ ||
             isPositionOverRightPanelResizeEdge(mouse_x, mouse_y)) {
+            return true;
+        }
+
+        const auto bottom_tabs = panel_layout_.bottomDockTabBarRect();
+        if (panel_layout_.isBottomDockHoveringEdge() ||
+            (panel_layout_.isBottomDockExpanded() &&
+             DockHorizontalLayout{bottom_tabs.x, bottom_tabs.width}.containsResizePointer(
+                 mouse_x, mouse_y, panel_layout_.bottomDockTopY(), current_ui_scale_))) {
             return true;
         }
 

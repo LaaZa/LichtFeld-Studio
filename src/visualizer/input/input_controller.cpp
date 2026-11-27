@@ -4,6 +4,7 @@
 
 #include "input/input_controller.hpp"
 #include "core/collision.hpp"
+#include "core/editor_context.hpp"
 #include "core/error_bus.hpp"
 #include "core/event_bridge/localization_manager.hpp"
 #include "core/logger.hpp"
@@ -2597,6 +2598,9 @@ namespace lfs::vis {
             case input::Action::TOGGLE_LEFT_DOCK:
                 ui::ToggleSideDock{.side = lfs::core::SideDock::Left}.emit();
                 return;
+            case input::Action::TOGGLE_BOTTOM_DOCK:
+                ui::ToggleSideDock{.side = lfs::core::SideDock::Bottom}.emit();
+                return;
             case input::Action::TOGGLE_RIGHT_DOCK:
                 ui::ToggleSideDock{.side = lfs::core::SideDock::Right}.emit();
                 return;
@@ -4504,7 +4508,7 @@ namespace lfs::vis {
             return input::ToolMode::VR;
         if (op::operators().isModal(op::BuiltinOp::ModelAlignment))
             return input::ToolMode::ALIGN;
-        if (UnifiedToolRegistry::instance().getActiveTool() == "builtin.cropbox")
+        if (isCropToolId(UnifiedToolRegistry::instance().getActiveTool()))
             return input::ToolMode::CROP_BOX;
         if (selection_tool_ && selection_tool_->isEnabled())
             return input::ToolMode::SELECTION;
