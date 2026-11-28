@@ -1024,6 +1024,8 @@ namespace lfs::training {
 
         // Cached GPU scalar to avoid per-iteration allocation
         core::Tensor loss_accumulator_;
+        size_t last_morton_size_ = 0;
+        int last_morton_iter_ = 0;
         // persistent FastGS scale/opacity reg loss scalars (filled in fused bwd)
         core::Tensor fused_scale_reg_loss_;
         core::Tensor fused_opacity_reg_loss_;
@@ -1069,6 +1071,7 @@ namespace lfs::training {
         // for camera-space priors.
         std::array<float, 9> normal_prior_world_rotation_{1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f};
         std::unordered_map<int, lfs::training::kernels::DepthAnchor> depth_anchors_;
+        std::optional<std::uint64_t> depth_anchor_seed_;
         // View uid -> the uid earlier versions gave that view, for views whose uid changed.
         std::unordered_map<int, int> legacy_view_uids_;
         bool depth_anchor_fit_attempted_ = false;
